@@ -200,6 +200,8 @@ void test_adopt() {
     auto adopted = Device::adopt(owner.handles());
     require(adopted.handle() == owner.handle(), "adopted same device");
     require(!adopted.owns_device(), "adopted does not own the device");
+    require(&adopted.queue_mutex() == &owner.queue_mutex(),
+            "adopted queue shares the owner mutex");
 
     constexpr std::uint32_t kCount = 64;
     auto staging = adopted.create_buffer(

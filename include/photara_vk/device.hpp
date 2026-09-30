@@ -139,4 +139,20 @@ private:
     std::shared_ptr<Impl> impl_;
 };
 
+// One mutex per VkQueue for the whole process. Every Device on that queue,
+// and every raw submit that takes QueueLock, shares it. Entries are never
+// removed, so the mutex address stays stable across map growth.
+[[nodiscard]] std::mutex& queue_mutex(VkQueue queue);
+
+class QueueLock {
+public:
+    explicit QueueLock(VkQueue queue);
+    explicit QueueLock(const Device& device);
+    QueueLock(const QueueLock&) = delete;
+    QueueLock& operator=(const QueueLock&) = delete;
+
+private:
+    std::unique_lock<std::mutex> lock_;
+};
+
 }  // namespace photara::vk

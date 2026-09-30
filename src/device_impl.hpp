@@ -20,11 +20,11 @@ struct Device::Impl {
     VkCommandPool command_pool = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
     PFN_vkCmdPushDescriptorSetKHR cmd_push_descriptor = nullptr;
-    mutable std::mutex queue_mutex;
     mutable std::mutex pool_mutex;
     VkPhysicalDeviceMemoryProperties memory{};
     VkDeviceSize non_coherent_atom_size = 1;
 
+    void ensure_command_pool();
     ~Impl();
 };
 

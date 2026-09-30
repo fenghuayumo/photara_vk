@@ -90,6 +90,7 @@ BuiltLevel build_level(
     range.primitiveCount = primitives;
     const VkAccelerationStructureBuildRangeInfoKHR* ranges[] = {&range};
 
+    impl.ensure_command_pool();
     VkCommandBuffer command = VK_NULL_HANDLE;
     {
         std::lock_guard lock(impl.pool_mutex);
@@ -111,7 +112,7 @@ BuiltLevel build_level(
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &command;
     {
-        std::lock_guard lock(impl.queue_mutex);
+        std::lock_guard lock(queue_mutex(impl.queue));
         check_vk(vkQueueSubmit(impl.queue, 1, &submit, VK_NULL_HANDLE), "vkQueueSubmit");
         check_vk(vkQueueWaitIdle(impl.queue), "vkQueueWaitIdle");
     }

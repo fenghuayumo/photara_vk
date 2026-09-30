@@ -21,6 +21,7 @@ CommandEncoder::CommandEncoder(
     if (!impl_ || impl_->device == VK_NULL_HANDLE) {
         throw std::logic_error("photara_vk Device is empty");
     }
+    impl_->ensure_command_pool();
     {
         std::lock_guard lock(impl_->pool_mutex);
         VkCommandBufferAllocateInfo allocate{
@@ -330,7 +331,7 @@ void CommandEncoder::submit() {
     submit_info.commandBufferCount = 1;
     submit_info.pCommandBuffers = &command_;
     {
-        std::lock_guard lock(impl_->queue_mutex);
+        std::lock_guard lock(queue_mutex(impl_->queue));
         check_vk(vkQueueSubmit(impl_->queue, 1, &submit_info, fence_), "vkQueueSubmit");
     }
     recording_ = false;

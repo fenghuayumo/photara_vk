@@ -5,7 +5,9 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -450,25 +452,37 @@ void create_logical(Device::Impl& impl, const DeviceRequest& request) {
 #endif
 }
 
-void create_pools(Device::Impl& impl) {
+}  // namespace
+
+void Device::Impl::ensure_command_pool() {
+    std::lock_guard lock(pool_mutex);
+    if (command_pool != VK_NULL_HANDLE) return;
     VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    pool.queueFamilyIndex = impl.queue_family;
-    check_vk(vkCreateCommandPool(impl.device, &pool, nullptr, &impl.command_pool),
+    pool.queueFamilyIndex = queue_family;
+    check_vk(vkCreateCommandPool(device, &pool, nullptr, &command_pool),
              "vkCreateCommandPool");
 }
 
-}  // namespace
-
 Device::Impl::~Impl() {
-    if (device != VK_NULL_HANDLE) {
-        std::lock_guard lock(queue_mutex);
+    if (owns_device && device != VK_NULL_HANDLE && queue != VK_NULL_HANDLE) {
+        std::lock_guard lock(photara::vk::queue_mutex(queue));
         vkDeviceWaitIdle(device);
         if (command_pool != VK_NULL_HANDLE) {
             vkDestroyCommandPool(device, command_pool, nullptr);
+            command_pool = VK_NULL_HANDLE;
         }
-        if (owns_device) {
+        vkDestroyDevice(device, nullptr);
+        device = VK_NULL_HANDLE;
+        queue = VK_NULL_HANDLE;
+    } else {
+        if (command_pool != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
+            vkDestroyCommandPool(device, command_pool, nullptr);
+            command_pool = VK_NULL_HANDLE;
+        }
+        if (owns_device && device != VK_NULL_HANDLE) {
             vkDestroyDevice(device, nullptr);
+            device = VK_NULL_HANDLE;
         }
     }
     if (debug_messenger != VK_NULL_HANDLE && instance != VK_NULL_HANDLE) {
@@ -490,7 +504,6 @@ Device Device::create(const DeviceRequest& request) {
     create_instance(*device.impl_, request);
     pick_physical(*device.impl_, request);
     create_logical(*device.impl_, request);
-    create_pools(*device.impl_);
     return device;
 }
 
@@ -527,7 +540,6 @@ Device Device::adopt(const ExternalDevice& external) {
             impl.caps.enabled.push_descriptors = false;
         }
     }
-    create_pools(impl);
     return device;
 }
 
@@ -594,14 +606,36 @@ bool Device::owns_device() const noexcept {
     return impl_ != nullptr && impl_->owns_device;
 }
 
+std::mutex& queue_mutex(const VkQueue queue) {
+    if (queue == VK_NULL_HANDLE) {
+        throw std::invalid_argument("Vulkan queue is null");
+    }
+    // Heap, not a function-local static. Those are destroyed in reverse
+    // construction order, and a device destructor often runs later than the
+    // first submit that would have created the table.
+    static auto* const table_mutex = new std::mutex;
+    static auto* const gates =
+        new std::unordered_map<VkQueue, std::unique_ptr<std::mutex>>;
+    std::lock_guard lock(*table_mutex);
+    auto& slot = (*gates)[queue];
+    if (!slot) slot = std::make_unique<std::mutex>();
+    return *slot;
+}
+
+QueueLock::QueueLock(const VkQueue queue) : lock_(queue_mutex(queue)) {}
+
+QueueLock::QueueLock(const Device& device) : lock_(device.queue_mutex()) {}
+
 std::mutex& Device::queue_mutex() const {
-    if (!impl_) throw std::logic_error("photara_vk Device is empty");
-    return impl_->queue_mutex;
+    if (!impl_ || impl_->queue == VK_NULL_HANDLE) {
+        throw std::logic_error("photara_vk Device is empty");
+    }
+    return photara::vk::queue_mutex(impl_->queue);
 }
 
 void Device::wait_idle() const {
     if (!impl_ || impl_->device == VK_NULL_HANDLE) return;
-    std::lock_guard lock(impl_->queue_mutex);
+    std::lock_guard lock(queue_mutex());
     check_vk(vkDeviceWaitIdle(impl_->device), "vkDeviceWaitIdle");
 }
 
