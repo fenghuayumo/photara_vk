@@ -3,6 +3,7 @@
 #include "device_impl.hpp"
 #include "photara_vk/check.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -34,16 +35,7 @@ CommandEncoder::CommandEncoder(
     check_vk(vkCreateFence(impl_->device, &fence_info, nullptr, &fence_),
              "vkCreateFence");
     if (!impl_->caps.enabled.push_descriptors) {
-        const VkDescriptorPoolSize sizes[] = {
-            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kDescriptorSets * kDescriptorsPerSet},
-        };
-        VkDescriptorPoolCreateInfo pool_info{
-            VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pool_info.maxSets = kDescriptorSets;
-        pool_info.poolSizeCount = 1;
-        pool_info.pPoolSizes = sizes;
-        check_vk(vkCreateDescriptorPool(impl_->device, &pool_info, nullptr, &pool_),
-                 "vkCreateDescriptorPool");
+        add_descriptor_pool(kDescriptorSets);
     }
 }
 
@@ -53,9 +45,12 @@ CommandEncoder::~CommandEncoder() {
         if (recording_ || in_flight_) submit_wait();
     } catch (...) {
     }
-    if (pool_ != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(impl_->device, pool_, nullptr);
+    for (const VkDescriptorPool pool : pools_) {
+        if (pool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(impl_->device, pool, nullptr);
+        }
     }
+    pools_.clear();
     if (fence_ != VK_NULL_HANDLE) {
         vkDestroyFence(impl_->device, fence_, nullptr);
     }
@@ -75,8 +70,11 @@ CommandEncoder& CommandEncoder::operator=(CommandEncoder&& other) noexcept {
     std::swap(policy_, other.policy_);
     std::swap(command_, other.command_);
     std::swap(fence_, other.fence_);
-    std::swap(pool_, other.pool_);
+    std::swap(pools_, other.pools_);
+    std::swap(pool_sets_, other.pool_sets_);
     std::swap(pending_sets_, other.pending_sets_);
+    std::swap(descriptor_infos_, other.descriptor_infos_);
+    std::swap(descriptor_writes_, other.descriptor_writes_);
     std::swap(recording_, other.recording_);
     std::swap(in_flight_, other.in_flight_);
     return *this;
@@ -88,11 +86,7 @@ void CommandEncoder::retire() {
              "vkWaitForFences");
     check_vk(vkResetFences(impl_->device, 1, &fence_), "vkResetFences");
     in_flight_ = false;
-    pending_sets_.clear();
-    if (pool_ != VK_NULL_HANDLE) {
-        check_vk(vkResetDescriptorPool(impl_->device, pool_, 0),
-                 "vkResetDescriptorPool");
-    }
+    reset_descriptor_pools();
 }
 
 void CommandEncoder::begin() {
@@ -164,43 +158,92 @@ void CommandEncoder::push(
         push_constants);
 }
 
+void CommandEncoder::add_descriptor_pool(const std::uint32_t sets) {
+    const VkDescriptorPoolSize sizes[] = {
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * kDescriptorsPerSet},
+    };
+    VkDescriptorPoolCreateInfo pool_info{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool_info.maxSets = sets;
+    pool_info.poolSizeCount = 1;
+    pool_info.pPoolSizes = sizes;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    check_vk(vkCreateDescriptorPool(impl_->device, &pool_info, nullptr, &pool),
+             "vkCreateDescriptorPool");
+    pools_.push_back(pool);
+    pool_sets_ = sets;
+}
+
+void CommandEncoder::reset_descriptor_pools() {
+    pending_sets_.clear();
+    if (pools_.empty()) return;
+    for (std::size_t index = 0; index + 1 < pools_.size(); ++index) {
+        vkDestroyDescriptorPool(impl_->device, pools_[index], nullptr);
+    }
+    const VkDescriptorPool keep = pools_.back();
+    pools_.clear();
+    pools_.push_back(keep);
+    check_vk(vkResetDescriptorPool(impl_->device, keep, 0),
+             "vkResetDescriptorPool");
+}
+
+VkDescriptorSet CommandEncoder::allocate_set(const VkDescriptorSetLayout layout) {
+    if (pools_.empty()) add_descriptor_pool(kDescriptorSets);
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        VkDescriptorSetAllocateInfo allocate{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocate.descriptorPool = pools_.back();
+        allocate.descriptorSetCount = 1;
+        allocate.pSetLayouts = &layout;
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        const VkResult result =
+            vkAllocateDescriptorSets(impl_->device, &allocate, &set);
+        if (result == VK_SUCCESS) {
+            pending_sets_.push_back(set);
+            return set;
+        }
+        const bool exhausted = result == VK_ERROR_OUT_OF_POOL_MEMORY ||
+                               result == VK_ERROR_FRAGMENTED_POOL;
+        if (!exhausted || attempt == 1 || pool_sets_ >= (1u << 20)) {
+            check_vk(result, "vkAllocateDescriptorSets");
+        }
+        add_descriptor_pool(std::max(kDescriptorSets, pool_sets_ * 2));
+    }
+    throw std::runtime_error("vkAllocateDescriptorSets failed");
+}
+
 void CommandEncoder::bind_storage(
     const ComputePipeline& pipeline, std::span<const BufferBinding> bindings) {
     if (bindings.size() != pipeline.binding_count()) {
         throw std::invalid_argument("Descriptor binding count does not match pipeline");
     }
-    std::vector<VkDescriptorBufferInfo> infos(bindings.size());
-    std::vector<VkWriteDescriptorSet> writes(bindings.size());
+    descriptor_infos_.resize(bindings.size());
+    descriptor_writes_.resize(bindings.size());
     for (std::uint32_t index = 0; index < bindings.size(); ++index) {
-        infos[index].buffer = bindings[index].buffer;
-        infos[index].offset = bindings[index].offset;
-        infos[index].range = bindings[index].range;
-        writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[index].dstBinding = index;
-        writes[index].descriptorCount = 1;
-        writes[index].descriptorType = pipeline.descriptor_type(index);
-        writes[index].pBufferInfo = &infos[index];
+        descriptor_infos_[index].buffer = bindings[index].buffer;
+        descriptor_infos_[index].offset = bindings[index].offset;
+        descriptor_infos_[index].range = bindings[index].range;
+        descriptor_writes_[index] = {
+            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        descriptor_writes_[index].dstBinding = index;
+        descriptor_writes_[index].descriptorCount = 1;
+        descriptor_writes_[index].descriptorType =
+            pipeline.descriptor_type(index);
+        descriptor_writes_[index].pBufferInfo = &descriptor_infos_[index];
     }
     vkCmdBindPipeline(command_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.handle());
     if (pipeline.push_descriptors() && impl_->cmd_push_descriptor != nullptr) {
         impl_->cmd_push_descriptor(
             command_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.layout(), 0,
-            static_cast<std::uint32_t>(writes.size()), writes.data());
+            static_cast<std::uint32_t>(descriptor_writes_.size()),
+            descriptor_writes_.data());
         return;
     }
-    VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    allocate.descriptorPool = pool_;
-    allocate.descriptorSetCount = 1;
-    const VkDescriptorSetLayout layout = pipeline.set_layout();
-    allocate.pSetLayouts = &layout;
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    check_vk(vkAllocateDescriptorSets(impl_->device, &allocate, &set),
-             "vkAllocateDescriptorSets");
-    pending_sets_.push_back(set);
-    for (VkWriteDescriptorSet& write : writes) write.dstSet = set;
+    const VkDescriptorSet set = allocate_set(pipeline.set_layout());
+    for (VkWriteDescriptorSet& write : descriptor_writes_) write.dstSet = set;
     vkUpdateDescriptorSets(
-        impl_->device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0,
-        nullptr);
+        impl_->device, static_cast<std::uint32_t>(descriptor_writes_.size()),
+        descriptor_writes_.data(), 0, nullptr);
     vkCmdBindDescriptorSets(
         command_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.layout(), 0, 1, &set, 0,
         nullptr);

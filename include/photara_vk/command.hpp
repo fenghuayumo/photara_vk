@@ -88,6 +88,9 @@ private:
         const ComputePipeline& pipeline, const void* push_constants,
         std::uint32_t push_bytes);
     void after_dispatch();
+    void add_descriptor_pool(std::uint32_t sets);
+    void reset_descriptor_pools();
+    [[nodiscard]] VkDescriptorSet allocate_set(VkDescriptorSetLayout layout);
 
     friend class EncoderRing;
 
@@ -95,8 +98,16 @@ private:
     BarrierPolicy policy_ = BarrierPolicy::after_compute;
     VkCommandBuffer command_ = VK_NULL_HANDLE;
     VkFence fence_ = VK_NULL_HANDLE;
-    VkDescriptorPool pool_ = VK_NULL_HANDLE;
+    // Descriptor sets stay alive until the submission that uses them retires.
+    // A batch that outgrows the current pool allocates another one instead of
+    // resetting a pool a recorded command still references.
+    std::vector<VkDescriptorPool> pools_;
+    std::uint32_t pool_sets_ = 0;
     std::vector<VkDescriptorSet> pending_sets_;
+    // Reused across dispatches so descriptor binding does not allocate two
+    // temporary vectors for every recorded operation.
+    std::vector<VkDescriptorBufferInfo> descriptor_infos_;
+    std::vector<VkWriteDescriptorSet> descriptor_writes_;
     bool recording_ = false;
     bool in_flight_ = false;
 };
