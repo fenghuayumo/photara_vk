@@ -7,11 +7,13 @@
 #       [ENV vulkan1.2]
 #       [INCLUDE_DIR path]
 #       [OUTPUT_DIR path]
-#       [DEPENDS extra.hlsli])
+#       [DEPENDS extra.hlsli]
+#       [EXTRA -fspv-extension=SPV_KHR_ray_query])
 #
-# The generated headers are added as sources of TARGET and OUTPUT_DIR is added
-# to its private include path. VARIABLE_NAME is the C identifier of the file
-# name plus _spv, e.g. add.hlsl -> add_hlsl_spv.
+# One call uses one profile and target environment. The generated headers are
+# added as sources of TARGET and OUTPUT_DIR is added to its private include
+# path. VARIABLE_NAME is the C identifier of the file name plus _spv, e.g.
+# add.hlsl -> add_hlsl_spv. Headers are ${filename}.embedded.hpp.
 
 set(PHOTARA_VK_EMBED_SPIR_V "${CMAKE_CURRENT_LIST_DIR}/embed_spir_v.cmake")
 

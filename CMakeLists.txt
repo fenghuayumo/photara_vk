@@ -35,7 +35,9 @@ endif()
 find_program(PHOTARA_VK_DXC
     NAMES dxc
     HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
-include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PhotaraVkShaders.cmake")
+set(PHOTARA_VK_CMAKE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cmake" CACHE INTERNAL
+    "Directory containing PhotaraVkShaders.cmake")
+include("${PHOTARA_VK_CMAKE_DIR}/PhotaraVkShaders.cmake")
 
 if((PHOTARA_BUILD_TESTS OR BUILD_TESTING) AND PHOTARA_VK_DXC)
     add_executable(photara_vk_test tests/runtime_test.cpp)
