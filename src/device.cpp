@@ -277,20 +277,49 @@ void create_logical(Device::Impl& impl, const DeviceRequest& request) {
         enabled.timeline_semaphore = true;
     }
 
+    VkPhysicalDeviceFeatures2 shader_features{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    bool enable_shader_float64 = false;
+    if (request.want.shader_float64 && features_query.features.shaderFloat64) {
+        shader_features.features.shaderFloat64 = VK_TRUE;
+        enabled.shader_float64 = true;
+        enable_shader_float64 = true;
+    }
+
 #ifdef VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME
     VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomic{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
-    if (request.want.buffer_atomic_f32 &&
+    const bool want_atomic =
+        request.want.buffer_atomic_f32 || request.want.buffer_atomic_f64;
+    if (want_atomic &&
         has_device_extension(impl.physical, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME)) {
         VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomic_query{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
         VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         query.pNext = &atomic_query;
         vkGetPhysicalDeviceFeatures2(impl.physical, &query);
-        if (atomic_query.shaderBufferFloat32AtomicAdd) {
-            extensions.push_back(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
+        bool enable_atomic = false;
+        if (request.want.buffer_atomic_f32 && atomic_query.shaderBufferFloat32AtomicAdd) {
             atomic.shaderBufferFloat32AtomicAdd = VK_TRUE;
             enabled.buffer_atomic_f32 = true;
+            enable_atomic = true;
+        }
+        // Float64 atomic add is illegal unless the non-add atomic feature and
+        // core shaderFloat64 are enabled on the same device.
+        if (request.want.buffer_atomic_f64 &&
+            features_query.features.shaderFloat64 &&
+            atomic_query.shaderBufferFloat64Atomics &&
+            atomic_query.shaderBufferFloat64AtomicAdd) {
+            atomic.shaderBufferFloat64Atomics = VK_TRUE;
+            atomic.shaderBufferFloat64AtomicAdd = VK_TRUE;
+            enabled.buffer_atomic_f64 = true;
+            shader_features.features.shaderFloat64 = VK_TRUE;
+            enabled.shader_float64 = true;
+            enable_shader_float64 = true;
+            enable_atomic = true;
+        }
+        if (enable_atomic) {
+            extensions.push_back(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
         }
     }
 #endif
@@ -422,8 +451,11 @@ void create_logical(Device::Impl& impl, const DeviceRequest& request) {
         pNext = &feature;
     };
     if (vk12.bufferDeviceAddress || vk12.timelineSemaphore) push_feature(vk12);
+    if (enable_shader_float64) push_feature(shader_features);
 #ifdef VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME
-    if (atomic.shaderBufferFloat32AtomicAdd) push_feature(atomic);
+    if (atomic.shaderBufferFloat32AtomicAdd || atomic.shaderBufferFloat64AtomicAdd) {
+        push_feature(atomic);
+    }
 #endif
     if (dot.shaderIntegerDotProduct) push_feature(dot);
     if (acceleration.accelerationStructure) push_feature(acceleration);

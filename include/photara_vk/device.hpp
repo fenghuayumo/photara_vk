@@ -30,6 +30,10 @@ enum class BarrierPolicy : std::uint32_t {
 struct Features {
     bool push_descriptors = false;
     bool buffer_atomic_f32 = false;
+    // shaderBufferFloat64Atomics + shaderBufferFloat64AtomicAdd. Requires
+    // shader_float64, which create() turns on when this request is granted.
+    bool buffer_atomic_f64 = false;
+    bool shader_float64 = false;
     bool integer_dot_product = false;
     bool buffer_device_address = false;
     bool ray_query = false;
