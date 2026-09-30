@@ -10,12 +10,13 @@
 
 #include <vulkan/vulkan.h>
 
+#include "photara_vk/accel.hpp"
+#include "photara_vk/graphics.hpp"
+
 namespace photara::vk {
 
-class Buffer;
 class ComputePipeline;
 class CommandEncoder;
-enum class MemoryKind : std::uint32_t;
 
 enum class BarrierPolicy : std::uint32_t {
     none = 0,
@@ -118,6 +119,19 @@ public:
         std::uint32_t push_bytes) const;
     [[nodiscard]] CommandEncoder encoder(
         BarrierPolicy policy = BarrierPolicy::after_compute) const;
+    [[nodiscard]] TriangleScene create_triangle_scene(
+        std::span<const float> positions,
+        std::span<const std::uint32_t> indices) const;
+    [[nodiscard]] Image create_image(const ImageDesc& desc) const;
+    [[nodiscard]] ImageView create_image_view(
+        VkImage image, VkFormat format, VkImageAspectFlags aspect) const;
+    [[nodiscard]] RenderPass create_render_pass(
+        std::span<const AttachmentDesc> attachments,
+        std::span<const SubpassDependencyDesc> dependencies) const;
+    [[nodiscard]] Framebuffer create_framebuffer(
+        const RenderPass& render_pass, std::span<const VkImageView> attachments,
+        std::uint32_t width, std::uint32_t height) const;
+    [[nodiscard]] GraphicsPipeline create_graphics(const GraphicsDesc& desc) const;
 
     void wait_idle() const;
 

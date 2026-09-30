@@ -16,7 +16,7 @@
 set(PHOTARA_VK_EMBED_SPIR_V "${CMAKE_CURRENT_LIST_DIR}/embed_spir_v.cmake")
 
 function(photara_vk_embed_hlsl)
-    cmake_parse_arguments(ARG "" "TARGET;PROFILE;ENV;INCLUDE_DIR;OUTPUT_DIR" "SHADERS;DEPENDS" ${ARGN})
+    cmake_parse_arguments(ARG "" "TARGET;PROFILE;ENV;INCLUDE_DIR;OUTPUT_DIR" "SHADERS;DEPENDS;EXTRA" ${ARGN})
     if(NOT ARG_TARGET)
         message(FATAL_ERROR "photara_vk_embed_hlsl: TARGET is required")
     endif()
@@ -57,6 +57,7 @@ function(photara_vk_embed_hlsl)
                     -spirv -T ${ARG_PROFILE} -E main -O3
                     -fspv-target-env=${ARG_ENV}
                     -fvk-use-dx-layout
+                    ${ARG_EXTRA}
                     -I "${ARG_INCLUDE_DIR}"
                     "${shader_source}"
                     -Fo "${shader_binary}"

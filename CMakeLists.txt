@@ -9,7 +9,9 @@ if(NOT TARGET photara_vk)
         src/device.cpp
         src/buffer.cpp
         src/pipeline.cpp
-        src/command.cpp)
+        src/command.cpp
+        src/accel.cpp
+        src/graphics.cpp)
     add_library(photara_vk::photara_vk ALIAS photara_vk)
 
     target_include_directories(photara_vk
@@ -40,6 +42,25 @@ if((PHOTARA_BUILD_TESTS OR BUILD_TESTING) AND PHOTARA_VK_DXC)
     photara_vk_embed_hlsl(
         TARGET photara_vk_test
         SHADERS tests/shaders/add.hlsl
+        INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders"
+        OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    photara_vk_embed_hlsl(
+        TARGET photara_vk_test
+        SHADERS tests/shaders/ray_query.hlsl
+        PROFILE cs_6_5
+        EXTRA -fspv-extension=SPV_KHR_ray_query
+        INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders"
+        OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    photara_vk_embed_hlsl(
+        TARGET photara_vk_test
+        SHADERS tests/shaders/triangle.vs.hlsl
+        PROFILE vs_6_0
+        INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders"
+        OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    photara_vk_embed_hlsl(
+        TARGET photara_vk_test
+        SHADERS tests/shaders/triangle.ps.hlsl
+        PROFILE ps_6_0
         INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders"
         OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
     target_link_libraries(photara_vk_test PRIVATE photara_vk::photara_vk)
