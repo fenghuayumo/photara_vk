@@ -3,19 +3,9 @@ if(NOT DEFINED INPUT_FILE OR NOT DEFINED OUTPUT_FILE OR NOT DEFINED VARIABLE_NAM
 endif()
 
 file(READ "${INPUT_FILE}" shader_hex HEX)
-string(LENGTH "${shader_hex}" hex_length)
-math(EXPR byte_count "${hex_length} / 2")
-set(output "#pragma once\n\ninline constexpr unsigned char ${VARIABLE_NAME}[] = {\n    ")
-set(byte_index 0)
-while(byte_index LESS byte_count)
-    math(EXPR hex_index "${byte_index} * 2")
-    string(SUBSTRING "${shader_hex}" ${hex_index} 2 byte_hex)
-    string(APPEND output "0x${byte_hex},")
-    math(EXPR byte_index "${byte_index} + 1")
-    math(EXPR line_position "${byte_index} % 16")
-    if(line_position EQUAL 0 AND byte_index LESS byte_count)
-        string(APPEND output "\n    ")
-    endif()
-endwhile()
-string(APPEND output "\n};\n")
-file(WRITE "${OUTPUT_FILE}" "${output}")
+# Convert in bulk: per-byte substring/appends become quadratic for large
+# shaders. Break the hex into 16-byte lines before formatting each byte.
+string(REGEX REPLACE "(................................)" "\\1\n    " shader_lines "${shader_hex}")
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," shader_bytes "${shader_lines}")
+file(WRITE "${OUTPUT_FILE}"
+    "#pragma once\n\ninline constexpr unsigned char ${VARIABLE_NAME}[] = {\n    ${shader_bytes}\n};\n")
