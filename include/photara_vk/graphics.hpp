@@ -1,13 +1,31 @@
 #pragma once
 
-#include <cstddef>
-#include <cstdint>
-#include <span>
-#include <memory>
-
 #include <vulkan/vulkan.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <span>
+
 namespace photara::vk {
+
+class Sampler {
+public:
+    Sampler() = default;
+    explicit Sampler(VkDevice device);
+    ~Sampler();
+    Sampler(Sampler &&other) noexcept;
+    Sampler &operator=(Sampler &&other) noexcept;
+    Sampler(const Sampler &) = delete;
+    Sampler &operator=(const Sampler &) = delete;
+    [[nodiscard]] VkSampler handle() const noexcept { return handle_; }
+
+private:
+    friend class Device;
+    std::shared_ptr<void> keep_;
+    VkDevice device_ = VK_NULL_HANDLE;
+    VkSampler handle_ = VK_NULL_HANDLE;
+};
 
 struct ImageDesc {
     std::uint32_t width = 1;
@@ -21,12 +39,12 @@ struct ImageDesc {
 class Image {
 public:
     Image() = default;
-    Image(VkPhysicalDevice physical, VkDevice device, const ImageDesc& desc);
+    Image(VkPhysicalDevice physical, VkDevice device, const ImageDesc &desc);
     ~Image();
-    Image(Image&& other) noexcept;
-    Image& operator=(Image&& other) noexcept;
-    Image(const Image&) = delete;
-    Image& operator=(const Image&) = delete;
+    Image(Image &&other) noexcept;
+    Image &operator=(Image &&other) noexcept;
+    Image(const Image &) = delete;
+    Image &operator=(const Image &) = delete;
 
     [[nodiscard]] bool valid() const noexcept { return handle_ != VK_NULL_HANDLE; }
     [[nodiscard]] VkImage handle() const noexcept { return handle_; }
@@ -48,13 +66,13 @@ private:
 class ImageView {
 public:
     ImageView() = default;
-    ImageView(
-        VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspect);
+    ImageView(VkDevice device, VkImage image, VkFormat format,
+              VkImageAspectFlags aspect);
     ~ImageView();
-    ImageView(ImageView&& other) noexcept;
-    ImageView& operator=(ImageView&& other) noexcept;
-    ImageView(const ImageView&) = delete;
-    ImageView& operator=(const ImageView&) = delete;
+    ImageView(ImageView &&other) noexcept;
+    ImageView &operator=(ImageView &&other) noexcept;
+    ImageView(const ImageView &) = delete;
+    ImageView &operator=(const ImageView &) = delete;
 
     [[nodiscard]] bool valid() const noexcept { return handle_ != VK_NULL_HANDLE; }
     [[nodiscard]] VkImageView handle() const noexcept { return handle_; }
@@ -89,14 +107,13 @@ struct SubpassDependencyDesc {
 class RenderPass {
 public:
     RenderPass() = default;
-    RenderPass(
-        VkDevice device, std::span<const AttachmentDesc> attachments,
-        std::span<const SubpassDependencyDesc> dependencies);
+    RenderPass(VkDevice device, std::span<const AttachmentDesc> attachments,
+               std::span<const SubpassDependencyDesc> dependencies);
     ~RenderPass();
-    RenderPass(RenderPass&& other) noexcept;
-    RenderPass& operator=(RenderPass&& other) noexcept;
-    RenderPass(const RenderPass&) = delete;
-    RenderPass& operator=(const RenderPass&) = delete;
+    RenderPass(RenderPass &&other) noexcept;
+    RenderPass &operator=(RenderPass &&other) noexcept;
+    RenderPass(const RenderPass &) = delete;
+    RenderPass &operator=(const RenderPass &) = delete;
 
     [[nodiscard]] bool valid() const noexcept { return handle_ != VK_NULL_HANDLE; }
     [[nodiscard]] VkRenderPass handle() const noexcept { return handle_; }
@@ -111,15 +128,14 @@ private:
 class Framebuffer {
 public:
     Framebuffer() = default;
-    Framebuffer(
-        VkDevice device, VkRenderPass render_pass,
-        std::span<const VkImageView> attachments, std::uint32_t width,
-        std::uint32_t height);
+    Framebuffer(VkDevice device, VkRenderPass render_pass,
+                std::span<const VkImageView> attachments, std::uint32_t width,
+                std::uint32_t height);
     ~Framebuffer();
-    Framebuffer(Framebuffer&& other) noexcept;
-    Framebuffer& operator=(Framebuffer&& other) noexcept;
-    Framebuffer(const Framebuffer&) = delete;
-    Framebuffer& operator=(const Framebuffer&) = delete;
+    Framebuffer(Framebuffer &&other) noexcept;
+    Framebuffer &operator=(Framebuffer &&other) noexcept;
+    Framebuffer(const Framebuffer &) = delete;
+    Framebuffer &operator=(const Framebuffer &) = delete;
 
     [[nodiscard]] bool valid() const noexcept { return handle_ != VK_NULL_HANDLE; }
     [[nodiscard]] VkFramebuffer handle() const noexcept { return handle_; }
@@ -145,10 +161,9 @@ struct ColorBlend {
     VkBlendFactor src_alpha = VK_BLEND_FACTOR_ONE;
     VkBlendFactor dst_alpha = VK_BLEND_FACTOR_ZERO;
     VkBlendOp alpha_op = VK_BLEND_OP_ADD;
-    VkColorComponentFlags write_mask = VK_COLOR_COMPONENT_R_BIT |
-                                       VK_COLOR_COMPONENT_G_BIT |
-                                       VK_COLOR_COMPONENT_B_BIT |
-                                       VK_COLOR_COMPONENT_A_BIT;
+    VkColorComponentFlags write_mask =
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+        VK_COLOR_COMPONENT_A_BIT;
 };
 
 // Graphics pipelines created here always use dynamic viewport and scissor.
@@ -180,12 +195,12 @@ struct GraphicsDesc {
 class GraphicsPipeline {
 public:
     GraphicsPipeline() = default;
-    GraphicsPipeline(VkDevice device, const GraphicsDesc& desc);
+    GraphicsPipeline(VkDevice device, const GraphicsDesc &desc);
     ~GraphicsPipeline();
-    GraphicsPipeline(GraphicsPipeline&& other) noexcept;
-    GraphicsPipeline& operator=(GraphicsPipeline&& other) noexcept;
-    GraphicsPipeline(const GraphicsPipeline&) = delete;
-    GraphicsPipeline& operator=(const GraphicsPipeline&) = delete;
+    GraphicsPipeline(GraphicsPipeline &&other) noexcept;
+    GraphicsPipeline &operator=(GraphicsPipeline &&other) noexcept;
+    GraphicsPipeline(const GraphicsPipeline &) = delete;
+    GraphicsPipeline &operator=(const GraphicsPipeline &) = delete;
 
     [[nodiscard]] bool valid() const noexcept { return handle_ != VK_NULL_HANDLE; }
     [[nodiscard]] VkPipeline handle() const noexcept { return handle_; }

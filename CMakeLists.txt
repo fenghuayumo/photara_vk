@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 if(NOT TARGET photara_vk)
-    project(photara_vk VERSION 0.2.0 LANGUAGES CXX)
+    project(photara_vk VERSION 0.3.0 LANGUAGES CXX)
 
     find_package(Vulkan 1.2 REQUIRED)
     find_package(Threads REQUIRED)
@@ -51,6 +51,7 @@ if((PHOTARA_BUILD_TESTS OR BUILD_TESTING) AND PHOTARA_VK_DXC)
     photara_vk_embed_hlsl(
         TARGET photara_vk_test
         SHADERS tests/shaders/add.hlsl
+        tests/shaders/sample_image.hlsl
         INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders"
         OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
     photara_vk_embed_hlsl(

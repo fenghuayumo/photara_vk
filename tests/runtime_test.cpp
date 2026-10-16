@@ -1,36 +1,36 @@
-#include "photara_vk/photara_vk.hpp"
-
-#include "add.hlsl.embedded.hpp"
-#include "ray_query.hlsl.embedded.hpp"
-#include "triangle.ps.hlsl.embedded.hpp"
-#include "triangle.vs.hlsl.embedded.hpp"
-
 #include <cmath>
-#include <cstring>
-#include <utility>
-#include <thread>
-#include <exception>
 #include <cstdint>
+#include <cstring>
+#include <exception>
 #include <iostream>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
+
+#include "add.hlsl.embedded.hpp"
+#include "photara_vk/photara_vk.hpp"
+#include "ray_query.hlsl.embedded.hpp"
+#include "sample_image.hlsl.embedded.hpp"
+#include "triangle.ps.hlsl.embedded.hpp"
+#include "triangle.vs.hlsl.embedded.hpp"
 
 namespace {
 
 using namespace photara::vk;
 
-void require(const bool condition, const char* message) {
+void require(const bool condition, const char *message) {
     if (!condition) throw std::runtime_error(message);
 }
 
 void require_near(const float actual, const float expected, const float eps,
-                  const char* message) {
+                  const char *message) {
     if (std::abs(actual - expected) > eps) {
-        throw std::runtime_error(
-            std::string(message) + " actual=" + std::to_string(actual) +
-            " expected=" + std::to_string(expected));
+        throw std::runtime_error(std::string(message) +
+                                 " actual=" + std::to_string(actual) +
+                                 " expected=" + std::to_string(expected));
     }
 }
 
@@ -54,15 +54,14 @@ void test_enumerate_and_create() {
     require(device.queue_family() != VK_QUEUE_FAMILY_IGNORED, "queue family");
     require(!device.caps().name.empty(), "device name");
     std::cout << "device: " << device.caps().name
-              << " push_descriptors=" << device.caps().enabled.push_descriptors
-              << "\n";
+              << " push_descriptors=" << device.caps().enabled.push_descriptors << "\n";
 }
 
 void test_host_buffer_roundtrip() {
     auto device = make_device();
     const std::vector<float> host{1.F, 2.F, 3.F, 4.F};
-    auto buffer = device.create_buffer(
-        host.size() * sizeof(float), MemoryKind::host_visible);
+    auto buffer =
+        device.create_buffer(host.size() * sizeof(float), MemoryKind::host_visible);
     buffer.upload(host.data(), host.size() * sizeof(float));
     std::vector<float> back(host.size());
     buffer.download(back.data(), back.size() * sizeof(float));
@@ -88,8 +87,7 @@ void test_timestamp_pool() {
         std::cout << "timestamp pool: skipped (queue has no timestamp bits)\n";
         return;
     }
-    require(device.caps().timestamp_period_nanoseconds > 0.0,
-            "timestamp period");
+    require(device.caps().timestamp_period_nanoseconds > 0.0, "timestamp period");
 
     auto pool = device.create_timestamp_pool(2);
     require(pool.valid() && pool.count() == 2, "timestamp pool");
@@ -106,8 +104,7 @@ void test_timestamp_pool() {
     require(timestamps[1] >= timestamps[0], "timestamp ordering");
     require(pool.elapsed_nanoseconds(0, 1) >= 0.0, "timestamp interval");
     require(pool.elapsed_seconds(0, 1) >= 0.0, "timestamp interval seconds");
-    std::cout << "timestamp pool: "
-              << pool.elapsed_nanoseconds(0, 1) << " ns\n";
+    std::cout << "timestamp pool: " << pool.elapsed_nanoseconds(0, 1) << " ns\n";
 }
 
 void test_compute_add() {
@@ -115,11 +112,11 @@ void test_compute_add() {
     constexpr std::uint32_t kCount = 256;
     std::vector<float> input(kCount);
     for (std::uint32_t i = 0; i < kCount; ++i) input[i] = static_cast<float>(i);
-    auto staging = device.create_buffer(
-        kCount * sizeof(float), MemoryKind::host_visible);
+    auto staging =
+        device.create_buffer(kCount * sizeof(float), MemoryKind::host_visible);
     auto gpu = device.create_buffer(kCount * sizeof(float), MemoryKind::device_local);
-    auto readback = device.create_buffer(
-        kCount * sizeof(float), MemoryKind::host_cached);
+    auto readback =
+        device.create_buffer(kCount * sizeof(float), MemoryKind::host_cached);
     staging.upload(input.data(), input.size() * sizeof(float));
 
     auto pipeline = device.create_compute(add_spirv(), 1, 8);
@@ -131,8 +128,7 @@ void test_compute_add() {
     auto encoder = device.encoder();
     encoder.copy(gpu, 0, staging, 0, kCount * sizeof(float));
     const BufferBinding bindings[] = {binding(gpu)};
-    encoder.dispatch(
-        pipeline, bindings, &push, sizeof(push), ceil_div(kCount, 64));
+    encoder.dispatch(pipeline, bindings, &push, sizeof(push), ceil_div(kCount, 64));
     encoder.copy(readback, 0, gpu, 0, kCount * sizeof(float));
     encoder.submit_wait();
 
@@ -143,9 +139,70 @@ void test_compute_add() {
     }
 }
 
-template<class F> void require_invalid(F action, const char* message) {
-    try { action(); }
-    catch (const std::invalid_argument&) { return; }
+void test_sampled_image(bool push) {
+    DeviceRequest request;
+    request.want.push_descriptors = push;
+    request.validation = true;
+    request.synchronization_validation = true;
+    auto device = Device::create(request);
+    ImageDesc desc;
+    desc.width = 2;
+    desc.height = 1;
+    desc.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    desc.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    require(device.supports_linear_sampling(desc.format),
+            "RGBA32F linear sampling unsupported");
+    auto image = device.create_image(desc);
+    auto view = device.create_image_view(image.handle(), desc.format,
+                                         VK_IMAGE_ASPECT_COLOR_BIT);
+    auto sampler = device.create_sampler();
+    auto staging = device.create_buffer(32, MemoryKind::host_visible);
+    const float texels[] = {2, 0, 0, 1, 0, 4, 0, 1};
+    staging.upload(texels, sizeof(texels));
+    auto output = device.create_buffer(16, MemoryKind::device_local);
+    auto readback = device.create_buffer(16, MemoryKind::host_cached);
+    const VkDescriptorType types[] = {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                                      VK_DESCRIPTOR_TYPE_SAMPLER,
+                                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+    auto pipeline = device.create_compute(
+        std::as_bytes(std::span{sample_image_hlsl_spv}), types, 0);
+    auto encoder = device.encoder(BarrierPolicy::none);
+    encoder.transition_image(
+        image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+        VK_ACCESS_TRANSFER_WRITE_BIT);
+    encoder.copy_to_image(image, staging);
+    encoder.transition_image(image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+    const DescriptorBinding bindings[] = {binding(view), binding(sampler),
+                                          binding(output)};
+    encoder.dispatch(pipeline, bindings, nullptr, 0, 1);
+    encoder.barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                    VK_ACCESS_TRANSFER_READ_BIT);
+    encoder.copy(readback, 0, output, 0, 16);
+    encoder.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
+    encoder.submit_wait();
+    float values[4]{};
+    readback.download(values, sizeof(values));
+    require_near(values[0], 1, 1e-6f, "Image red interpolation");
+    require_near(values[1], 2, 1e-6f, "Image green interpolation");
+    require_near(values[3], 1, 1e-6f, "Image alpha interpolation");
+    require(device.validation_error_count() == 0,
+            "Image upload/sampling validation errors");
+}
+
+template <class F>
+void require_invalid(F action, const char *message) {
+    try {
+        action();
+    } catch (const std::invalid_argument &) {
+        return;
+    }
     throw std::runtime_error(message);
 }
 
@@ -158,7 +215,8 @@ void test_pipeline_cache(bool push_descriptors) {
     auto cache = device.create_pipeline_cache();
     auto first = device.create_compute(add_spirv(), 1, 8, &cache);
     auto bytes = cache.data();
-    require(bytes.size() >= sizeof(VkPipelineCacheHeaderVersionOne), "cache has header");
+    require(bytes.size() >= sizeof(VkPipelineCacheHeaderVersionOne),
+            "cache has header");
     auto restored = device.create_pipeline_cache(bytes);
     auto pipeline = device.create_compute(add_spirv(), 1, 8, &restored);
     auto moved = std::move(restored);
@@ -169,8 +227,11 @@ void test_pipeline_cache(bool push_descriptors) {
     // A cache may be shared by builders and serialized at the same time.
     std::exception_ptr worker_error;
     std::jthread builder([&] {
-        try { auto built = device.create_compute(add_spirv(), 1, 8, &cache); }
-        catch (...) { worker_error = std::current_exception(); }
+        try {
+            auto built = device.create_compute(add_spirv(), 1, 8, &cache);
+        } catch (...) {
+            worker_error = std::current_exception();
+        }
     });
     const auto concurrent_data = cache.data();
     builder.join();
@@ -183,8 +244,9 @@ void test_pipeline_cache(bool push_descriptors) {
     PipelineCache empty;
     require_invalid([&] { (void)device.create_compute(add_spirv(), 1, 8, &empty); },
                     "empty cache accepted");
-    require_invalid([&] { (void)device.create_pipeline_cache(std::span(bytes).first(4)); },
-                    "truncated cache accepted");
+    require_invalid(
+        [&] { (void)device.create_pipeline_cache(std::span(bytes).first(4)); },
+        "truncated cache accepted");
     const std::size_t offsets[] = {
         offsetof(VkPipelineCacheHeaderVersionOne, headerSize),
         offsetof(VkPipelineCacheHeaderVersionOne, headerVersion),
@@ -208,7 +270,10 @@ void test_pipeline_cache(bool push_descriptors) {
     auto output = device.create_buffer(64 * sizeof(float), MemoryKind::host_cached);
     auto encoder = device.encoder();
     encoder.fill_u32(gpu, 0, gpu.size(), 0);
-    struct Push { std::uint32_t count; float addend; } push{64, 6.25F};
+    struct Push {
+        std::uint32_t count;
+        float addend;
+    } push{64, 6.25F};
     const DescriptorBinding bindings[] = {binding(gpu)};
     encoder.dispatch(pipeline, bindings, &push, sizeof(push), 1);
     encoder.copy(output, 0, gpu, 0, gpu.size());
@@ -238,22 +303,31 @@ void test_resource_device_lifetime() {
         return device.create_pipeline_cache();
     }();
     require(!cache.data().empty(), "cache retained device");
-    struct OrphanPipeline { ComputePipeline pipeline; ExternalDevice handles; };
+    struct OrphanPipeline {
+        ComputePipeline pipeline;
+        ExternalDevice handles;
+    };
     auto orphan = [] {
         auto device = make_device();
-        return OrphanPipeline{device.create_compute(add_spirv(), 1, 8), device.handles()};
+        return OrphanPipeline{device.create_compute(add_spirv(), 1, 8),
+                              device.handles()};
     }();
     {
         // Adopted wrappers borrow the native device. Only orphan.pipeline owns it.
         auto borrowed = Device::adopt(orphan.handles);
-        auto output = borrowed.create_buffer(64 * sizeof(float), MemoryKind::host_visible);
+        auto output =
+            borrowed.create_buffer(64 * sizeof(float), MemoryKind::host_visible);
         auto encoder = borrowed.encoder();
         encoder.fill_u32(output, 0, output.size(), 0);
-        struct Push { std::uint32_t count; float addend; } push{64, 2.5F};
+        struct Push {
+            std::uint32_t count;
+            float addend;
+        } push{64, 2.5F};
         const DescriptorBinding bindings[] = {binding(output)};
         encoder.dispatch(orphan.pipeline, bindings, &push, sizeof(push), 1);
-        encoder.barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
-                        VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
+        encoder.barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                        VK_ACCESS_HOST_READ_BIT);
         encoder.submit_wait();
         std::vector<float> values(64);
         output.download(values.data(), values.size() * sizeof(float));
@@ -273,7 +347,8 @@ void test_resource_device_lifetime() {
     if (pool.valid()) {
         TimestampPool moved;
         moved = std::move(pool);
-        require(!pool.valid() && moved.results().size() == 2, "timestamp retained device on move");
+        require(!pool.valid() && moved.results().size() == 2,
+                "timestamp retained device on move");
     }
     auto image = [] {
         auto device = make_device();
@@ -287,14 +362,14 @@ void test_dispatch_indirect() {
     constexpr std::uint32_t kCount = 256;
     std::vector<float> input(kCount);
     for (std::uint32_t i = 0; i < kCount; ++i) input[i] = static_cast<float>(i);
-    auto staging = device.create_buffer(
-        kCount * sizeof(float), MemoryKind::host_visible);
+    auto staging =
+        device.create_buffer(kCount * sizeof(float), MemoryKind::host_visible);
     auto gpu = device.create_buffer(kCount * sizeof(float), MemoryKind::device_local);
-    auto readback = device.create_buffer(
-        kCount * sizeof(float), MemoryKind::host_cached);
-    auto indirect = device.create_buffer(
-        sizeof(VkDispatchIndirectCommand), MemoryKind::device_local,
-        VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+    auto readback =
+        device.create_buffer(kCount * sizeof(float), MemoryKind::host_cached);
+    auto indirect = device.create_buffer(sizeof(VkDispatchIndirectCommand),
+                                         MemoryKind::device_local,
+                                         VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
     staging.upload(input.data(), input.size() * sizeof(float));
     auto pipeline = device.create_compute(add_spirv(), 1, 8);
     struct Push {
@@ -324,8 +399,8 @@ void test_encoder_ring() {
     constexpr std::uint32_t kCount = 64;
     auto gpu_a = device.create_buffer(kCount * sizeof(float), MemoryKind::device_local);
     auto gpu_b = device.create_buffer(kCount * sizeof(float), MemoryKind::device_local);
-    auto host = device.create_buffer(
-        2 * kCount * sizeof(float), MemoryKind::host_cached);
+    auto host =
+        device.create_buffer(2 * kCount * sizeof(float), MemoryKind::host_cached);
     auto pipeline = device.create_compute(add_spirv(), 1, 8);
     struct Push {
         std::uint32_t count;
@@ -334,7 +409,7 @@ void test_encoder_ring() {
 
     EncoderRing ring(device, 2, BarrierPolicy::after_compute);
     {
-        auto& cmd = ring.acquire();
+        auto &cmd = ring.acquire();
         cmd.fill_u32(gpu_a, 0, kCount * sizeof(float), 0);
         Push push{kCount, 1.5F};
         const BufferBinding bindings[] = {binding(gpu_a)};
@@ -342,7 +417,7 @@ void test_encoder_ring() {
         ring.submit();
     }
     {
-        auto& cmd = ring.acquire();
+        auto &cmd = ring.acquire();
         cmd.fill_u32(gpu_b, 0, kCount * sizeof(float), 0);
         Push push{kCount, 4.0F};
         const BufferBinding bindings[] = {binding(gpu_b)};
@@ -350,7 +425,7 @@ void test_encoder_ring() {
         ring.submit_wait();
     }
     {
-        auto& cmd = ring.acquire();
+        auto &cmd = ring.acquire();
         cmd.copy(host, 0, gpu_a, 0, kCount * sizeof(float));
         cmd.copy(host, kCount * sizeof(float), gpu_b, 0, kCount * sizeof(float));
         ring.submit_wait();
@@ -375,10 +450,9 @@ void test_adopt() {
             "adopted queue shares the owner mutex");
 
     constexpr std::uint32_t kCount = 64;
-    auto staging = adopted.create_buffer(
-        kCount * sizeof(float), MemoryKind::host_visible);
-    auto gpu = adopted.create_buffer(
-        kCount * sizeof(float), MemoryKind::device_local);
+    auto staging =
+        adopted.create_buffer(kCount * sizeof(float), MemoryKind::host_visible);
+    auto gpu = adopted.create_buffer(kCount * sizeof(float), MemoryKind::device_local);
     std::vector<float> input(kCount, 2.F);
     staging.upload(input.data(), input.size() * sizeof(float));
     auto pipeline = adopted.create_compute(add_spirv(), 1, 8);
@@ -389,8 +463,7 @@ void test_adopt() {
     auto encoder = adopted.encoder();
     encoder.copy(gpu, 0, staging, 0, kCount * sizeof(float));
     const BufferBinding bindings[] = {binding(gpu)};
-    encoder.dispatch(
-        pipeline, bindings, &push, sizeof(push), ceil_div(kCount, 64));
+    encoder.dispatch(pipeline, bindings, &push, sizeof(push), ceil_div(kCount, 64));
     encoder.copy(staging, 0, gpu, 0, kCount * sizeof(float));
     encoder.submit_wait();
     std::vector<float> output(kCount);
@@ -402,10 +475,11 @@ std::span<const std::byte> ray_spirv() {
     return std::as_bytes(std::span{ray_query_hlsl_spv});
 }
 
-std::uint32_t trace_ray(
-    Device& device, const TriangleScene& scene, const ComputePipeline& pipeline,
-    Buffer& hits, const float origin_x, const float origin_y, const float origin_z,
-    const float direction_x, const float direction_y, const float direction_z) {
+std::uint32_t trace_ray(Device &device, const TriangleScene &scene,
+                        const ComputePipeline &pipeline, Buffer &hits,
+                        const float origin_x, const float origin_y,
+                        const float origin_z, const float direction_x,
+                        const float direction_y, const float direction_z) {
     const std::uint32_t zero = 0;
     hits.upload(&zero, sizeof(zero));
     struct Push {
@@ -414,15 +488,13 @@ std::uint32_t trace_ray(
     } push{{origin_x, origin_y, origin_z, 0.001F},
            {direction_x, direction_y, direction_z, 10.F}};
     auto encoder = device.encoder(BarrierPolicy::none);
-    encoder.barrier(
-        VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_ACCESS_HOST_WRITE_BIT,
-        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+    encoder.barrier(VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_HOST_WRITE_BIT,
+                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     const DescriptorBinding bindings[] = {binding(scene), binding(hits)};
     encoder.dispatch(pipeline, bindings, &push, sizeof(push), 1);
-    encoder.barrier(
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
-        VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
+    encoder.barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                    VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
     encoder.submit_wait();
     std::uint32_t hit = 0;
     hits.download(&hit, sizeof(hit));
@@ -440,12 +512,13 @@ void test_triangle_scene(const bool push_descriptors) {
         std::cout << "triangle scene: skipped (no ray query)\n";
         return;
     }
-    require(device.caps().enabled.buffer_device_address, "ray query enables device address");
+    require(device.caps().enabled.buffer_device_address,
+            "ray query enables device address");
     bool rejected = false;
     try {
         const float none[] = {0.F};
         (void)device.create_triangle_scene(none, {});
-    } catch (const std::invalid_argument&) {
+    } catch (const std::invalid_argument &) {
         rejected = true;
     }
     require(rejected, "empty ray-query geometry is rejected");
@@ -475,21 +548,26 @@ void test_triangle_scene(const bool push_descriptors) {
     require(
         trace_ray(device, moved, pipeline, hits, 2.F, 2.F, 1.F, 0.F, 0.F, -1.F) == 0,
         "ray misses the triangle");
-    auto bottom=device.create_bottom_level(positions,indices,options);
-    std::weak_ptr<const BottomLevel> weak=bottom;
+    auto bottom = device.create_bottom_level(positions, indices, options);
+    std::weak_ptr<const BottomLevel> weak = bottom;
     std::vector<TriangleInstance> instances(2);
-    instances[0].geometry=bottom; instances[0].custom_index=9;
-    instances[1].geometry=bottom; instances[1].custom_index=19;
-    instances[1].transform.matrix[0][3]=2;
-    auto shared_scene=device.create_instance_scene(instances);
-    bottom.reset(); instances.clear();
+    instances[0].geometry = bottom;
+    instances[0].custom_index = 9;
+    instances[1].geometry = bottom;
+    instances[1].custom_index = 19;
+    instances[1].transform.matrix[0][3] = 2;
+    auto shared_scene = device.create_instance_scene(instances);
+    bottom.reset();
+    instances.clear();
     require(!weak.expired(), "TLAS must retain shared BLAS ownership");
-    require(trace_ray(device,shared_scene,pipeline,hits,2.2F,.2F,1,0,0,-1)==1,
-            "translated shared BLAS instance should be hit");
-    shared_scene=TriangleScene{};
+    require(
+        trace_ray(device, shared_scene, pipeline, hits, 2.2F, .2F, 1, 0, 0, -1) == 1,
+        "translated shared BLAS instance should be hit");
+    shared_scene = TriangleScene{};
     require(weak.expired(), "BLAS should be released when its last TLAS is destroyed");
     require(device.validation_error_count() == 0, "ray query validation errors");
-    std::cout << "triangle scene: alpha candidates, typed descriptors, push=" << push_descriptors << "\n";
+    std::cout << "triangle scene: alpha candidates, typed descriptors, push="
+              << push_descriptors << "\n";
 }
 
 void test_graphics_triangle() {
@@ -527,8 +605,8 @@ void test_graphics_triangle() {
     image_desc.usage =
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     auto image = device.create_image(image_desc);
-    auto view = device.create_image_view(
-        image.handle(), image.format(), VK_IMAGE_ASPECT_COLOR_BIT);
+    auto view = device.create_image_view(image.handle(), image.format(),
+                                         VK_IMAGE_ASPECT_COLOR_BIT);
     const VkImageView views[] = {view.handle()};
     auto framebuffer = device.create_framebuffer(pass, views, 8, 8);
     GraphicsDesc desc;
@@ -563,12 +641,11 @@ void test_graphics_triangle() {
     VkBufferImageCopy region{};
     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.imageExtent = {8, 8, 1};
-    vkCmdCopyImageToBuffer(
-        command, image.handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.handle(),
-        1, &region);
-    encoder.barrier(
-        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
-        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
+    vkCmdCopyImageToBuffer(command, image.handle(),
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.handle(), 1,
+                           &region);
+    encoder.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
     encoder.submit_wait();
 
     std::vector<std::uint8_t> pixels(8U * 8U * 4U);
@@ -587,6 +664,8 @@ int main() {
         test_fill_and_copy();
         test_timestamp_pool();
         test_compute_add();
+        test_sampled_image(true);
+        test_sampled_image(false);
         test_pipeline_cache(true);
         test_pipeline_cache(false);
         test_resource_device_lifetime();
@@ -596,7 +675,7 @@ int main() {
         test_triangle_scene(true);
         test_triangle_scene(false);
         test_graphics_triangle();
-    } catch (const std::exception& error) {
+    } catch (const std::exception &error) {
         std::cerr << "photara_vk runtime test failed: " << error.what() << "\n";
         return 1;
     }

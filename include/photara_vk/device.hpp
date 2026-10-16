@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vulkan/vulkan.h>
+
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -7,8 +9,6 @@
 #include <span>
 #include <string>
 #include <vector>
-
-#include <vulkan/vulkan.h>
 
 #include "photara_vk/accel.hpp"
 #include "photara_vk/cache.hpp"
@@ -58,7 +58,7 @@ struct DeviceRequest {
     bool validation = false;
     bool synchronization_validation = false;
     Features want{.push_descriptors = true};
-    std::vector<const char*> instance_extensions;
+    std::vector<const char *> instance_extensions;
     VkSurfaceKHR present_surface = VK_NULL_HANDLE;
 };
 
@@ -95,16 +95,16 @@ public:
     struct Impl;
 
     Device() = default;
-    Device(const Device&) = default;
-    Device& operator=(const Device&) = default;
-    Device(Device&&) noexcept = default;
-    Device& operator=(Device&&) noexcept = default;
+    Device(const Device &) = default;
+    Device &operator=(const Device &) = default;
+    Device(Device &&) noexcept = default;
+    Device &operator=(Device &&) noexcept = default;
     ~Device() = default;
 
-    [[nodiscard]] static Device create(const DeviceRequest& request = {});
-    [[nodiscard]] static Device adopt(const ExternalDevice& external);
+    [[nodiscard]] static Device create(const DeviceRequest &request = {});
+    [[nodiscard]] static Device adopt(const ExternalDevice &external);
     [[nodiscard]] static std::vector<Capabilities> enumerate(
-        const DeviceRequest& request = {});
+        const DeviceRequest &request = {});
 
     [[nodiscard]] bool valid() const noexcept { return impl_ != nullptr; }
     [[nodiscard]] VkInstance instance() const noexcept;
@@ -112,48 +112,49 @@ public:
     [[nodiscard]] VkDevice handle() const noexcept;
     [[nodiscard]] VkQueue queue() const noexcept;
     [[nodiscard]] std::uint32_t queue_family() const noexcept;
-    [[nodiscard]] const Capabilities& caps() const;
+    [[nodiscard]] const Capabilities &caps() const;
     [[nodiscard]] ExternalDevice handles() const;
     [[nodiscard]] bool owns_device() const noexcept;
     [[nodiscard]] std::uint32_t validation_error_count() const noexcept;
-    [[nodiscard]] std::mutex& queue_mutex() const;
+    [[nodiscard]] std::mutex &queue_mutex() const;
 
-    [[nodiscard]] Buffer create_buffer(
-        VkDeviceSize bytes, MemoryKind kind,
-        VkBufferUsageFlags extra_usage = 0) const;
+    [[nodiscard]] Buffer create_buffer(VkDeviceSize bytes, MemoryKind kind,
+                                       VkBufferUsageFlags extra_usage = 0) const;
     [[nodiscard]] TimestampPool create_timestamp_pool(
         std::uint32_t timestamp_count) const;
     [[nodiscard]] PipelineCache create_pipeline_cache(
         std::span<const std::byte> initial_data = {}) const;
     [[nodiscard]] ComputePipeline create_compute(
         std::span<const std::byte> spirv, std::uint32_t storage_buffer_count,
-        std::uint32_t push_bytes, const PipelineCache* cache = nullptr) const;
+        std::uint32_t push_bytes, const PipelineCache *cache = nullptr) const;
     [[nodiscard]] ComputePipeline create_compute(
         std::span<const std::byte> spirv,
-        std::span<const VkDescriptorType> descriptor_types,
-        std::uint32_t push_bytes, const PipelineCache* cache = nullptr) const;
+        std::span<const VkDescriptorType> descriptor_types, std::uint32_t push_bytes,
+        const PipelineCache *cache = nullptr) const;
     [[nodiscard]] CommandEncoder encoder(
         BarrierPolicy policy = BarrierPolicy::after_compute) const;
     [[nodiscard]] TriangleScene create_triangle_scene(
-        std::span<const float> positions,
-        std::span<const std::uint32_t> indices,
-        const TriangleSceneOptions& options = {}) const;
+        std::span<const float> positions, std::span<const std::uint32_t> indices,
+        const TriangleSceneOptions &options = {}) const;
     [[nodiscard]] std::shared_ptr<BottomLevel> create_bottom_level(
         std::span<const float> positions, std::span<const std::uint32_t> indices,
-        const TriangleSceneOptions& options = {}) const;
+        const TriangleSceneOptions &options = {}) const;
     [[nodiscard]] TriangleScene create_instance_scene(
         std::span<const TriangleInstance> instances,
-        VkBuildAccelerationStructureFlagsKHR flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR) const;
-    [[nodiscard]] Image create_image(const ImageDesc& desc) const;
-    [[nodiscard]] ImageView create_image_view(
-        VkImage image, VkFormat format, VkImageAspectFlags aspect) const;
+        VkBuildAccelerationStructureFlagsKHR flags =
+            VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR) const;
+    [[nodiscard]] Image create_image(const ImageDesc &desc) const;
+    [[nodiscard]] Sampler create_sampler() const;
+    [[nodiscard]] bool supports_linear_sampling(VkFormat format) const;
+    [[nodiscard]] ImageView create_image_view(VkImage image, VkFormat format,
+                                              VkImageAspectFlags aspect) const;
     [[nodiscard]] RenderPass create_render_pass(
         std::span<const AttachmentDesc> attachments,
         std::span<const SubpassDependencyDesc> dependencies) const;
     [[nodiscard]] Framebuffer create_framebuffer(
-        const RenderPass& render_pass, std::span<const VkImageView> attachments,
+        const RenderPass &render_pass, std::span<const VkImageView> attachments,
         std::uint32_t width, std::uint32_t height) const;
-    [[nodiscard]] GraphicsPipeline create_graphics(const GraphicsDesc& desc) const;
+    [[nodiscard]] GraphicsPipeline create_graphics(const GraphicsDesc &desc) const;
 
     void wait_idle() const;
 
@@ -164,14 +165,14 @@ private:
 // One mutex per VkQueue for the whole process. Every Device on that queue,
 // and every raw submit that takes QueueLock, shares it. Entries are never
 // removed, so the mutex address stays stable across map growth.
-[[nodiscard]] std::mutex& queue_mutex(VkQueue queue);
+[[nodiscard]] std::mutex &queue_mutex(VkQueue queue);
 
 class QueueLock {
 public:
     explicit QueueLock(VkQueue queue);
-    explicit QueueLock(const Device& device);
-    QueueLock(const QueueLock&) = delete;
-    QueueLock& operator=(const QueueLock&) = delete;
+    explicit QueueLock(const Device &device);
+    QueueLock(const QueueLock &) = delete;
+    QueueLock &operator=(const QueueLock &) = delete;
 
 private:
     std::unique_lock<std::mutex> lock_;

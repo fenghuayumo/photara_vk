@@ -1,19 +1,19 @@
 #include "photara_vk/graphics.hpp"
 
-#include "device_impl.hpp"
-#include "photara_vk/check.hpp"
-
 #include <cstring>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
+#include "device_impl.hpp"
+#include "photara_vk/check.hpp"
+
 namespace photara::vk {
 namespace {
 
-std::uint32_t find_memory_type(
-    const VkPhysicalDevice physical, const std::uint32_t type_bits,
-    const VkMemoryPropertyFlags required) {
+std::uint32_t find_memory_type(const VkPhysicalDevice physical,
+                               const std::uint32_t type_bits,
+                               const VkMemoryPropertyFlags required) {
     VkPhysicalDeviceMemoryProperties properties{};
     vkGetPhysicalDeviceMemoryProperties(physical, &properties);
     for (std::uint32_t index = 0; index < properties.memoryTypeCount; ++index) {
@@ -25,7 +25,8 @@ std::uint32_t find_memory_type(
     throw std::runtime_error("No compatible Vulkan memory type was found");
 }
 
-VkShaderModule make_module(const VkDevice device, const std::span<const std::byte> spirv) {
+VkShaderModule make_module(const VkDevice device,
+                           const std::span<const std::byte> spirv) {
     if (spirv.empty() || spirv.size() % sizeof(std::uint32_t) != 0) {
         throw std::runtime_error("Invalid embedded SPIR-V bytecode");
     }
@@ -35,7 +36,8 @@ VkShaderModule make_module(const VkDevice device, const std::span<const std::byt
     info.codeSize = words.size() * sizeof(std::uint32_t);
     info.pCode = words.data();
     VkShaderModule module = VK_NULL_HANDLE;
-    check_vk(vkCreateShaderModule(device, &info, nullptr, &module), "vkCreateShaderModule");
+    check_vk(vkCreateShaderModule(device, &info, nullptr, &module),
+             "vkCreateShaderModule");
     return module;
 }
 
@@ -47,25 +49,22 @@ struct ShaderModule {
             vkDestroyShaderModule(device, handle, nullptr);
         }
     }
-    ShaderModule(const ShaderModule&) = delete;
-    ShaderModule& operator=(const ShaderModule&) = delete;
+    ShaderModule(const ShaderModule &) = delete;
+    ShaderModule &operator=(const ShaderModule &) = delete;
     ShaderModule() = default;
-    ShaderModule(ShaderModule&& other) noexcept
+    ShaderModule(ShaderModule &&other) noexcept
         : device(other.device), handle(other.handle) {
         other.device = VK_NULL_HANDLE;
         other.handle = VK_NULL_HANDLE;
     }
-    ShaderModule& operator=(ShaderModule&&) = delete;
+    ShaderModule &operator=(ShaderModule &&) = delete;
 };
 
 }  // namespace
 
-Image::Image(
-    const VkPhysicalDevice physical, const VkDevice device, const ImageDesc& desc)
-    : device_(device),
-      width_(desc.width),
-      height_(desc.height),
-      format_(desc.format) {
+Image::Image(const VkPhysicalDevice physical, const VkDevice device,
+             const ImageDesc &desc)
+    : device_(device), width_(desc.width), height_(desc.height), format_(desc.format) {
     if (device_ == VK_NULL_HANDLE || desc.width == 0 || desc.height == 0 ||
         desc.format == VK_FORMAT_UNDEFINED || desc.usage == 0) {
         throw std::invalid_argument("Image description is incomplete");
@@ -91,7 +90,8 @@ Image::Image(
         check_vk(vkAllocateMemory(device_, &allocation, nullptr, &memory_),
                  "vkAllocateMemory");
         try {
-            check_vk(vkBindImageMemory(device_, handle_, memory_, 0), "vkBindImageMemory");
+            check_vk(vkBindImageMemory(device_, handle_, memory_, 0),
+                     "vkBindImageMemory");
         } catch (...) {
             vkFreeMemory(device_, memory_, nullptr);
             memory_ = VK_NULL_HANDLE;
@@ -110,9 +110,44 @@ Image::~Image() {
     if (memory_ != VK_NULL_HANDLE) vkFreeMemory(device_, memory_, nullptr);
 }
 
-Image::Image(Image&& other) noexcept { *this = std::move(other); }
+Sampler::Sampler(VkDevice device) : device_(device) {
+    if (device == VK_NULL_HANDLE) throw std::invalid_argument("Empty sampler device");
+    VkSamplerCreateInfo info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    info.magFilter = info.minFilter = VK_FILTER_LINEAR;
+    info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    info.addressModeU = info.addressModeV = info.addressModeW =
+        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.maxLod = 0;
+    check_vk(vkCreateSampler(device, &info, nullptr, &handle_), "vkCreateSampler");
+}
+Sampler::~Sampler() {
+    if (handle_ != VK_NULL_HANDLE) vkDestroySampler(device_, handle_, nullptr);
+}
+Sampler::Sampler(Sampler &&other) noexcept { *this = std::move(other); }
+Sampler &Sampler::operator=(Sampler &&other) noexcept {
+    std::swap(keep_, other.keep_);
+    std::swap(device_, other.device_);
+    std::swap(handle_, other.handle_);
+    return *this;
+}
+Sampler Device::create_sampler() const {
+    if (!impl_) throw std::logic_error("Empty device");
+    Sampler value(handle());
+    value.keep_ = impl_;
+    return value;
+}
+bool Device::supports_linear_sampling(VkFormat format) const {
+    if (!impl_) throw std::logic_error("Empty device");
+    VkFormatProperties properties{};
+    vkGetPhysicalDeviceFormatProperties(impl_->physical, format, &properties);
+    const auto required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                          VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    return (properties.optimalTilingFeatures & required) == required;
+}
 
-Image& Image::operator=(Image&& other) noexcept {
+Image::Image(Image &&other) noexcept { *this = std::move(other); }
+
+Image &Image::operator=(Image &&other) noexcept {
     if (this == &other) return *this;
     std::swap(keep_, other.keep_);
     std::swap(device_, other.device_);
@@ -124,9 +159,8 @@ Image& Image::operator=(Image&& other) noexcept {
     return *this;
 }
 
-ImageView::ImageView(
-    const VkDevice device, const VkImage image, const VkFormat format,
-    const VkImageAspectFlags aspect)
+ImageView::ImageView(const VkDevice device, const VkImage image, const VkFormat format,
+                     const VkImageAspectFlags aspect)
     : device_(device) {
     if (device == VK_NULL_HANDLE || image == VK_NULL_HANDLE ||
         format == VK_FORMAT_UNDEFINED || aspect == 0) {
@@ -146,9 +180,9 @@ ImageView::~ImageView() {
     }
 }
 
-ImageView::ImageView(ImageView&& other) noexcept { *this = std::move(other); }
+ImageView::ImageView(ImageView &&other) noexcept { *this = std::move(other); }
 
-ImageView& ImageView::operator=(ImageView&& other) noexcept {
+ImageView &ImageView::operator=(ImageView &&other) noexcept {
     if (this == &other) return *this;
     std::swap(keep_, other.keep_);
     std::swap(device_, other.device_);
@@ -156,9 +190,9 @@ ImageView& ImageView::operator=(ImageView&& other) noexcept {
     return *this;
 }
 
-RenderPass::RenderPass(
-    const VkDevice device, const std::span<const AttachmentDesc> attachments,
-    const std::span<const SubpassDependencyDesc> dependencies)
+RenderPass::RenderPass(const VkDevice device,
+                       const std::span<const AttachmentDesc> attachments,
+                       const std::span<const SubpassDependencyDesc> dependencies)
     : device_(device) {
     if (device_ == VK_NULL_HANDLE || attachments.empty()) {
         throw std::invalid_argument("Render pass needs a device and an attachment");
@@ -168,7 +202,7 @@ RenderPass::RenderPass(
     VkAttachmentReference depth_ref{};
     bool has_depth = false;
     for (std::uint32_t index = 0; index < attachments.size(); ++index) {
-        const AttachmentDesc& attachment = attachments[index];
+        const AttachmentDesc &attachment = attachments[index];
         if (attachment.format == VK_FORMAT_UNDEFINED) {
             throw std::invalid_argument("Render pass attachment format is undefined");
         }
@@ -182,7 +216,8 @@ RenderPass::RenderPass(
         descriptions[index].finalLayout = attachment.final_layout;
         if (attachment.depth) {
             if (has_depth) {
-                throw std::invalid_argument("Render pass has more than one depth attachment");
+                throw std::invalid_argument(
+                    "Render pass has more than one depth attachment");
             }
             has_depth = true;
             depth_ref.attachment = index;
@@ -201,7 +236,7 @@ RenderPass::RenderPass(
 
     std::vector<VkSubpassDependency> deps(dependencies.size());
     for (std::size_t index = 0; index < dependencies.size(); ++index) {
-        const SubpassDependencyDesc& dependency = dependencies[index];
+        const SubpassDependencyDesc &dependency = dependencies[index];
         deps[index].srcSubpass = dependency.src_subpass;
         deps[index].dstSubpass = dependency.dst_subpass;
         deps[index].srcStageMask = dependency.src_stage;
@@ -217,7 +252,8 @@ RenderPass::RenderPass(
     info.pSubpasses = &subpass;
     info.dependencyCount = static_cast<std::uint32_t>(deps.size());
     info.pDependencies = deps.empty() ? nullptr : deps.data();
-    check_vk(vkCreateRenderPass(device_, &info, nullptr, &handle_), "vkCreateRenderPass");
+    check_vk(vkCreateRenderPass(device_, &info, nullptr, &handle_),
+             "vkCreateRenderPass");
 }
 
 RenderPass::~RenderPass() {
@@ -226,9 +262,9 @@ RenderPass::~RenderPass() {
     }
 }
 
-RenderPass::RenderPass(RenderPass&& other) noexcept { *this = std::move(other); }
+RenderPass::RenderPass(RenderPass &&other) noexcept { *this = std::move(other); }
 
-RenderPass& RenderPass::operator=(RenderPass&& other) noexcept {
+RenderPass &RenderPass::operator=(RenderPass &&other) noexcept {
     if (this == &other) return *this;
     std::swap(keep_, other.keep_);
     std::swap(device_, other.device_);
@@ -236,10 +272,9 @@ RenderPass& RenderPass::operator=(RenderPass&& other) noexcept {
     return *this;
 }
 
-Framebuffer::Framebuffer(
-    const VkDevice device, const VkRenderPass render_pass,
-    const std::span<const VkImageView> attachments, const std::uint32_t width,
-    const std::uint32_t height)
+Framebuffer::Framebuffer(const VkDevice device, const VkRenderPass render_pass,
+                         const std::span<const VkImageView> attachments,
+                         const std::uint32_t width, const std::uint32_t height)
     : device_(device) {
     if (device == VK_NULL_HANDLE || render_pass == VK_NULL_HANDLE ||
         attachments.empty() || width == 0 || height == 0) {
@@ -252,7 +287,8 @@ Framebuffer::Framebuffer(
     info.width = width;
     info.height = height;
     info.layers = 1;
-    check_vk(vkCreateFramebuffer(device_, &info, nullptr, &handle_), "vkCreateFramebuffer");
+    check_vk(vkCreateFramebuffer(device_, &info, nullptr, &handle_),
+             "vkCreateFramebuffer");
 }
 
 Framebuffer::~Framebuffer() {
@@ -261,9 +297,9 @@ Framebuffer::~Framebuffer() {
     }
 }
 
-Framebuffer::Framebuffer(Framebuffer&& other) noexcept { *this = std::move(other); }
+Framebuffer::Framebuffer(Framebuffer &&other) noexcept { *this = std::move(other); }
 
-Framebuffer& Framebuffer::operator=(Framebuffer&& other) noexcept {
+Framebuffer &Framebuffer::operator=(Framebuffer &&other) noexcept {
     if (this == &other) return *this;
     std::swap(keep_, other.keep_);
     std::swap(device_, other.device_);
@@ -271,13 +307,15 @@ Framebuffer& Framebuffer::operator=(Framebuffer&& other) noexcept {
     return *this;
 }
 
-GraphicsPipeline::GraphicsPipeline(const VkDevice device, const GraphicsDesc& desc)
+GraphicsPipeline::GraphicsPipeline(const VkDevice device, const GraphicsDesc &desc)
     : device_(device), layout_(desc.pipeline_layout), owns_layout_(false) {
     if (device_ == VK_NULL_HANDLE || desc.render_pass == VK_NULL_HANDLE) {
-        throw std::invalid_argument("Graphics pipeline needs a device and a render pass");
+        throw std::invalid_argument(
+            "Graphics pipeline needs a device and a render pass");
     }
     if (desc.vertex_spirv.empty() || desc.fragment_spirv.empty()) {
-        throw std::invalid_argument("Graphics pipeline needs vertex and fragment SPIR-V");
+        throw std::invalid_argument(
+            "Graphics pipeline needs vertex and fragment SPIR-V");
     }
     if ((desc.vertex_stride == 0) != desc.attributes.empty()) {
         throw std::invalid_argument(
@@ -297,116 +335,118 @@ GraphicsPipeline::GraphicsPipeline(const VkDevice device, const GraphicsDesc& de
             desc.set_layout == VK_NULL_HANDLE ? nullptr : &desc.set_layout;
         layout_info.pushConstantRangeCount = desc.push_bytes == 0 ? 0U : 1U;
         layout_info.pPushConstantRanges = desc.push_bytes == 0 ? nullptr : &push;
-        check_vk(
-            vkCreatePipelineLayout(device_, &layout_info, nullptr, &layout_),
-            "vkCreatePipelineLayout");
+        check_vk(vkCreatePipelineLayout(device_, &layout_info, nullptr, &layout_),
+                 "vkCreatePipelineLayout");
         owns_layout_ = true;
     }
 
     try {
-    ShaderModule vertex;
-    ShaderModule fragment;
-    vertex.device = device_;
-    fragment.device = device_;
-    vertex.handle = make_module(device_, desc.vertex_spirv);
-    fragment.handle = make_module(device_, desc.fragment_spirv);
+        ShaderModule vertex;
+        ShaderModule fragment;
+        vertex.device = device_;
+        fragment.device = device_;
+        vertex.handle = make_module(device_, desc.vertex_spirv);
+        fragment.handle = make_module(device_, desc.fragment_spirv);
 
-    VkPipelineShaderStageCreateInfo stages[2]{};
-    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vertex.handle;
-    stages[0].pName = "main";
-    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fragment.handle;
-    stages[1].pName = "main";
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vertex.handle;
+        stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = fragment.handle;
+        stages[1].pName = "main";
 
-    VkVertexInputBindingDescription binding{};
-    binding.binding = 0;
-    binding.stride = desc.vertex_stride;
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    std::vector<VkVertexInputAttributeDescription> attributes(desc.attributes.size());
-    for (std::size_t index = 0; index < desc.attributes.size(); ++index) {
-        attributes[index].location = desc.attributes[index].location;
-        attributes[index].binding = 0;
-        attributes[index].format = desc.attributes[index].format;
-        attributes[index].offset = desc.attributes[index].offset;
-    }
-    VkPipelineVertexInputStateCreateInfo vertex_state{
-        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    if (desc.vertex_stride != 0) {
-        vertex_state.vertexBindingDescriptionCount = 1;
-        vertex_state.pVertexBindingDescriptions = &binding;
-        vertex_state.vertexAttributeDescriptionCount =
-            static_cast<std::uint32_t>(attributes.size());
-        vertex_state.pVertexAttributeDescriptions = attributes.data();
-    }
-    VkPipelineInputAssemblyStateCreateInfo assembly{
-        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    assembly.topology = desc.topology;
-    VkPipelineViewportStateCreateInfo viewport{
-        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-    viewport.viewportCount = 1;
-    viewport.scissorCount = 1;
-    VkPipelineRasterizationStateCreateInfo raster{
-        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-    raster.polygonMode = VK_POLYGON_MODE_FILL;
-    raster.cullMode = desc.cull;
-    raster.frontFace = desc.front_face;
-    raster.lineWidth = 1.F;
-    raster.depthBiasEnable = desc.depth_bias ? VK_TRUE : VK_FALSE;
-    raster.depthBiasConstantFactor = desc.depth_bias ? desc.depth_bias_constant : 0.F;
-    raster.depthBiasSlopeFactor = desc.depth_bias ? desc.depth_bias_slope : 0.F;
-    VkPipelineMultisampleStateCreateInfo multisample{
-        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    VkPipelineDepthStencilStateCreateInfo depth{
-        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    depth.depthTestEnable = desc.depth_test ? VK_TRUE : VK_FALSE;
-    depth.depthWriteEnable = desc.depth_write ? VK_TRUE : VK_FALSE;
-    depth.depthCompareOp = desc.depth_compare;
-    const bool use_depth = desc.depth_test || desc.depth_write;
-    VkPipelineColorBlendAttachmentState blend_attachment{};
-    blend_attachment.blendEnable = desc.blend.enable ? VK_TRUE : VK_FALSE;
-    blend_attachment.srcColorBlendFactor = desc.blend.src_color;
-    blend_attachment.dstColorBlendFactor = desc.blend.dst_color;
-    blend_attachment.colorBlendOp = desc.blend.color_op;
-    blend_attachment.srcAlphaBlendFactor = desc.blend.src_alpha;
-    blend_attachment.dstAlphaBlendFactor = desc.blend.dst_alpha;
-    blend_attachment.alphaBlendOp = desc.blend.alpha_op;
-    blend_attachment.colorWriteMask = desc.blend.write_mask;
-    VkPipelineColorBlendStateCreateInfo blend{
-        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    blend.attachmentCount = 1;
-    blend.pAttachments = &blend_attachment;
-    const VkDynamicState dynamic_states[] = {
-        VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dynamic{
-        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dynamic.dynamicStateCount = 2;
-    dynamic.pDynamicStates = dynamic_states;
+        VkVertexInputBindingDescription binding{};
+        binding.binding = 0;
+        binding.stride = desc.vertex_stride;
+        binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        std::vector<VkVertexInputAttributeDescription> attributes(
+            desc.attributes.size());
+        for (std::size_t index = 0; index < desc.attributes.size(); ++index) {
+            attributes[index].location = desc.attributes[index].location;
+            attributes[index].binding = 0;
+            attributes[index].format = desc.attributes[index].format;
+            attributes[index].offset = desc.attributes[index].offset;
+        }
+        VkPipelineVertexInputStateCreateInfo vertex_state{
+            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        if (desc.vertex_stride != 0) {
+            vertex_state.vertexBindingDescriptionCount = 1;
+            vertex_state.pVertexBindingDescriptions = &binding;
+            vertex_state.vertexAttributeDescriptionCount =
+                static_cast<std::uint32_t>(attributes.size());
+            vertex_state.pVertexAttributeDescriptions = attributes.data();
+        }
+        VkPipelineInputAssemblyStateCreateInfo assembly{
+            VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        assembly.topology = desc.topology;
+        VkPipelineViewportStateCreateInfo viewport{
+            VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        viewport.viewportCount = 1;
+        viewport.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo raster{
+            VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        raster.polygonMode = VK_POLYGON_MODE_FILL;
+        raster.cullMode = desc.cull;
+        raster.frontFace = desc.front_face;
+        raster.lineWidth = 1.F;
+        raster.depthBiasEnable = desc.depth_bias ? VK_TRUE : VK_FALSE;
+        raster.depthBiasConstantFactor =
+            desc.depth_bias ? desc.depth_bias_constant : 0.F;
+        raster.depthBiasSlopeFactor = desc.depth_bias ? desc.depth_bias_slope : 0.F;
+        VkPipelineMultisampleStateCreateInfo multisample{
+            VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineDepthStencilStateCreateInfo depth{
+            VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        depth.depthTestEnable = desc.depth_test ? VK_TRUE : VK_FALSE;
+        depth.depthWriteEnable = desc.depth_write ? VK_TRUE : VK_FALSE;
+        depth.depthCompareOp = desc.depth_compare;
+        const bool use_depth = desc.depth_test || desc.depth_write;
+        VkPipelineColorBlendAttachmentState blend_attachment{};
+        blend_attachment.blendEnable = desc.blend.enable ? VK_TRUE : VK_FALSE;
+        blend_attachment.srcColorBlendFactor = desc.blend.src_color;
+        blend_attachment.dstColorBlendFactor = desc.blend.dst_color;
+        blend_attachment.colorBlendOp = desc.blend.color_op;
+        blend_attachment.srcAlphaBlendFactor = desc.blend.src_alpha;
+        blend_attachment.dstAlphaBlendFactor = desc.blend.dst_alpha;
+        blend_attachment.alphaBlendOp = desc.blend.alpha_op;
+        blend_attachment.colorWriteMask = desc.blend.write_mask;
+        VkPipelineColorBlendStateCreateInfo blend{
+            VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        blend.attachmentCount = 1;
+        blend.pAttachments = &blend_attachment;
+        const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
+                                                 VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo dynamic{
+            VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+        dynamic.dynamicStateCount = 2;
+        dynamic.pDynamicStates = dynamic_states;
 
-    VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-    info.stageCount = 2;
-    info.pStages = stages;
-    info.pVertexInputState = &vertex_state;
-    info.pInputAssemblyState = &assembly;
-    info.pViewportState = &viewport;
-    info.pRasterizationState = &raster;
-    info.pMultisampleState = &multisample;
-    info.pDepthStencilState = use_depth ? &depth : nullptr;
-    info.pColorBlendState = &blend;
-    info.pDynamicState = &dynamic;
-    info.layout = layout_;
-    info.renderPass = desc.render_pass;
-    const VkResult result = vkCreateGraphicsPipelines(
-        device_, VK_NULL_HANDLE, 1, &info, nullptr, &handle_);
-    if (result != VK_SUCCESS) {
-        if (owns_layout_) vkDestroyPipelineLayout(device_, layout_, nullptr);
-        layout_ = VK_NULL_HANDLE;
-        owns_layout_ = false;
-        check_vk(result, "vkCreateGraphicsPipelines");
-    }
+        VkGraphicsPipelineCreateInfo info{
+            VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        info.stageCount = 2;
+        info.pStages = stages;
+        info.pVertexInputState = &vertex_state;
+        info.pInputAssemblyState = &assembly;
+        info.pViewportState = &viewport;
+        info.pRasterizationState = &raster;
+        info.pMultisampleState = &multisample;
+        info.pDepthStencilState = use_depth ? &depth : nullptr;
+        info.pColorBlendState = &blend;
+        info.pDynamicState = &dynamic;
+        info.layout = layout_;
+        info.renderPass = desc.render_pass;
+        const VkResult result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1,
+                                                          &info, nullptr, &handle_);
+        if (result != VK_SUCCESS) {
+            if (owns_layout_) vkDestroyPipelineLayout(device_, layout_, nullptr);
+            layout_ = VK_NULL_HANDLE;
+            owns_layout_ = false;
+            check_vk(result, "vkCreateGraphicsPipelines");
+        }
     } catch (...) {
         if (owns_layout_ && layout_ != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device_, layout_, nullptr);
@@ -426,11 +466,11 @@ GraphicsPipeline::~GraphicsPipeline() {
     }
 }
 
-GraphicsPipeline::GraphicsPipeline(GraphicsPipeline&& other) noexcept {
+GraphicsPipeline::GraphicsPipeline(GraphicsPipeline &&other) noexcept {
     *this = std::move(other);
 }
 
-GraphicsPipeline& GraphicsPipeline::operator=(GraphicsPipeline&& other) noexcept {
+GraphicsPipeline &GraphicsPipeline::operator=(GraphicsPipeline &&other) noexcept {
     if (this == &other) return *this;
     std::swap(keep_, other.keep_);
     std::swap(device_, other.device_);
@@ -440,15 +480,15 @@ GraphicsPipeline& GraphicsPipeline::operator=(GraphicsPipeline&& other) noexcept
     return *this;
 }
 
-Image Device::create_image(const ImageDesc& desc) const {
+Image Device::create_image(const ImageDesc &desc) const {
     if (!impl_) throw std::logic_error("photara_vk Device is empty");
     Image resource(impl_->physical, impl_->device, desc);
     resource.keep_ = impl_;
     return resource;
 }
 
-ImageView Device::create_image_view(
-    const VkImage image, const VkFormat format, const VkImageAspectFlags aspect) const {
+ImageView Device::create_image_view(const VkImage image, const VkFormat format,
+                                    const VkImageAspectFlags aspect) const {
     if (!impl_) throw std::logic_error("photara_vk Device is empty");
     ImageView resource(impl_->device, image, format, aspect);
     resource.keep_ = impl_;
@@ -464,16 +504,18 @@ RenderPass Device::create_render_pass(
     return resource;
 }
 
-Framebuffer Device::create_framebuffer(
-    const RenderPass& render_pass, const std::span<const VkImageView> attachments,
-    const std::uint32_t width, const std::uint32_t height) const {
+Framebuffer Device::create_framebuffer(const RenderPass &render_pass,
+                                       const std::span<const VkImageView> attachments,
+                                       const std::uint32_t width,
+                                       const std::uint32_t height) const {
     if (!impl_) throw std::logic_error("photara_vk Device is empty");
-    Framebuffer resource(impl_->device, render_pass.handle(), attachments, width, height);
+    Framebuffer resource(impl_->device, render_pass.handle(), attachments, width,
+                         height);
     resource.keep_ = impl_;
     return resource;
 }
 
-GraphicsPipeline Device::create_graphics(const GraphicsDesc& desc) const {
+GraphicsPipeline Device::create_graphics(const GraphicsDesc &desc) const {
     if (!impl_) throw std::logic_error("photara_vk Device is empty");
     GraphicsPipeline resource(impl_->device, desc);
     resource.keep_ = impl_;

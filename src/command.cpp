@@ -1,11 +1,11 @@
 #include "photara_vk/command.hpp"
 
-#include "device_impl.hpp"
-#include "photara_vk/check.hpp"
-
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
+
+#include "device_impl.hpp"
+#include "photara_vk/check.hpp"
 
 namespace photara::vk {
 namespace {
@@ -15,8 +15,8 @@ constexpr std::uint32_t kDescriptorsPerSet = 16;
 
 }  // namespace
 
-CommandEncoder::CommandEncoder(
-    std::shared_ptr<Device::Impl> impl, const BarrierPolicy policy)
+CommandEncoder::CommandEncoder(std::shared_ptr<Device::Impl> impl,
+                               const BarrierPolicy policy)
     : impl_(std::move(impl)), policy_(policy) {
     if (!impl_ || impl_->device == VK_NULL_HANDLE) {
         throw std::logic_error("photara_vk Device is empty");
@@ -61,11 +61,11 @@ CommandEncoder::~CommandEncoder() {
     }
 }
 
-CommandEncoder::CommandEncoder(CommandEncoder&& other) noexcept {
+CommandEncoder::CommandEncoder(CommandEncoder &&other) noexcept {
     *this = std::move(other);
 }
 
-CommandEncoder& CommandEncoder::operator=(CommandEncoder&& other) noexcept {
+CommandEncoder &CommandEncoder::operator=(CommandEncoder &&other) noexcept {
     if (this == &other) return *this;
     std::swap(impl_, other.impl_);
     std::swap(policy_, other.policy_);
@@ -75,6 +75,7 @@ CommandEncoder& CommandEncoder::operator=(CommandEncoder&& other) noexcept {
     std::swap(pool_sets_, other.pool_sets_);
     std::swap(pending_sets_, other.pending_sets_);
     std::swap(descriptor_infos_, other.descriptor_infos_);
+    std::swap(image_infos_, other.image_infos_);
     std::swap(descriptor_writes_, other.descriptor_writes_);
     std::swap(acceleration_infos_, other.acceleration_infos_);
     std::swap(recording_, other.recording_);
@@ -101,68 +102,119 @@ void CommandEncoder::begin() {
     recording_ = true;
 }
 
-void CommandEncoder::barrier(
-    const VkPipelineStageFlags src_stage, const VkPipelineStageFlags dst_stage,
-    const VkAccessFlags src_access, const VkAccessFlags dst_access) {
+void CommandEncoder::barrier(const VkPipelineStageFlags src_stage,
+                             const VkPipelineStageFlags dst_stage,
+                             const VkAccessFlags src_access,
+                             const VkAccessFlags dst_access) {
     begin();
     VkMemoryBarrier memory{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     memory.srcAccessMask = src_access;
     memory.dstAccessMask = dst_access;
-    vkCmdPipelineBarrier(
-        command_, src_stage, dst_stage, 0, 1, &memory, 0, nullptr, 0, nullptr);
+    vkCmdPipelineBarrier(command_, src_stage, dst_stage, 0, 1, &memory, 0, nullptr, 0,
+                         nullptr);
 }
 
 void CommandEncoder::barrier() {
-    barrier(
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
-            VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+    barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+}
+
+void CommandEncoder::transition_image(const Image &image, VkImageLayout old_layout,
+                                      VkImageLayout new_layout,
+                                      VkPipelineStageFlags src_stage,
+                                      VkPipelineStageFlags dst_stage,
+                                      VkAccessFlags src_access,
+                                      VkAccessFlags dst_access) {
+    if (!image.valid()) throw std::invalid_argument("Empty image barrier");
+    begin();
+    VkImageMemoryBarrier info{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    info.srcAccessMask = src_access;
+    info.dstAccessMask = dst_access;
+    info.oldLayout = old_layout;
+    info.newLayout = new_layout;
+    info.srcQueueFamilyIndex = info.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    info.image = image.handle();
+    info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(command_, src_stage, dst_stage, 0, 0, nullptr, 0, nullptr, 1,
+                         &info);
+}
+void CommandEncoder::copy_to_image(const Image &destination, const Buffer &source) {
+    if (!destination.valid() || source.handle() == VK_NULL_HANDLE)
+        throw std::invalid_argument("Empty image copy");
+    uint32_t texel_bytes = 0;
+    switch (destination.format()) {
+        case VK_FORMAT_R32G32B32A32_SFLOAT:
+            texel_bytes = 16;
+            break;
+        case VK_FORMAT_R16G16B16A16_SFLOAT:
+            texel_bytes = 8;
+            break;
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_R32_SFLOAT:
+            texel_bytes = 4;
+            break;
+        default:
+            throw std::invalid_argument(
+                "copy_to_image requires a supported tightly packed color format");
+    }
+    if (source.size() <
+            uint64_t(destination.width()) * destination.height() * texel_bytes ||
+        source.offset() % 4)
+        throw std::invalid_argument("Image upload buffer is too small or misaligned");
+    begin();
+    VkBufferImageCopy region{};
+    region.bufferOffset = source.offset();
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {destination.width(), destination.height(), 1};
+    vkCmdCopyBufferToImage(command_, source.handle(), destination.handle(),
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 }
 
 void CommandEncoder::after_dispatch() {
     switch (policy_) {
-    case BarrierPolicy::none:
-        break;
-    case BarrierPolicy::after_compute:
-        barrier(
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_ACCESS_SHADER_WRITE_BIT,
-            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
-                VK_ACCESS_TRANSFER_READ_BIT);
-        break;
-    case BarrierPolicy::after_compute_indirect:
-        barrier(
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
-                VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-            VK_ACCESS_SHADER_WRITE_BIT,
-            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
-                VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
-        break;
+        case BarrierPolicy::none:
+            break;
+        case BarrierPolicy::after_compute:
+            barrier(
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_ACCESS_SHADER_WRITE_BIT,
+                VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                    VK_ACCESS_TRANSFER_READ_BIT);
+            break;
+        case BarrierPolicy::after_compute_indirect:
+            barrier(
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
+                    VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                VK_ACCESS_SHADER_WRITE_BIT,
+                VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                    VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
+            break;
     }
 }
 
-void CommandEncoder::reset_timestamps(const TimestampPool& pool) {
+void CommandEncoder::reset_timestamps(const TimestampPool &pool) {
     if (!pool.valid()) throw std::invalid_argument("TimestampPool is empty");
     begin();
     vkCmdResetQueryPool(command_, pool.handle(), 0, pool.count());
 }
 
-void CommandEncoder::write_timestamp(
-    const TimestampPool& pool, const std::uint32_t index,
-    const VkPipelineStageFlagBits stage) {
+void CommandEncoder::write_timestamp(const TimestampPool &pool,
+                                     const std::uint32_t index,
+                                     const VkPipelineStageFlagBits stage) {
     if (!pool.valid()) throw std::invalid_argument("TimestampPool is empty");
     if (index >= pool.count()) throw std::out_of_range("TimestampPool query");
     begin();
     vkCmdWriteTimestamp(command_, stage, pool.handle(), index);
 }
 
-void CommandEncoder::push(
-    const ComputePipeline& pipeline, const void* push_constants,
-    const std::uint32_t push_bytes) {
+void CommandEncoder::push(const ComputePipeline &pipeline, const void *push_constants,
+                          const std::uint32_t push_bytes) {
     if (push_bytes != pipeline.push_bytes()) {
         throw std::invalid_argument("Push constant size does not match pipeline");
     }
@@ -170,20 +222,22 @@ void CommandEncoder::push(
     if (push_constants == nullptr) {
         throw std::invalid_argument("Push constants pointer is null");
     }
-    vkCmdPushConstants(
-        command_, pipeline.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, push_bytes,
-        push_constants);
+    vkCmdPushConstants(command_, pipeline.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                       push_bytes, push_constants);
 }
 
 void CommandEncoder::add_descriptor_pool(const std::uint32_t sets) {
     const VkDescriptorPoolSize sizes[] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * kDescriptorsPerSet},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets * kDescriptorsPerSet},
+        {VK_DESCRIPTOR_TYPE_SAMPLER, sets * kDescriptorsPerSet},
         {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, sets * kDescriptorsPerSet},
     };
-    VkDescriptorPoolCreateInfo pool_info{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool_info.maxSets = sets;
-    pool_info.poolSizeCount = impl_->caps.enabled.ray_query || impl_->caps.enabled.ray_tracing_pipeline ? 2 : 1;
+    pool_info.poolSizeCount =
+        impl_->caps.enabled.ray_query || impl_->caps.enabled.ray_tracing_pipeline ? 4
+                                                                                  : 3;
     pool_info.pPoolSizes = sizes;
     VkDescriptorPool pool = VK_NULL_HANDLE;
     check_vk(vkCreateDescriptorPool(impl_->device, &pool_info, nullptr, &pool),
@@ -201,8 +255,7 @@ void CommandEncoder::reset_descriptor_pools() {
     const VkDescriptorPool keep = pools_.back();
     pools_.clear();
     pools_.push_back(keep);
-    check_vk(vkResetDescriptorPool(impl_->device, keep, 0),
-             "vkResetDescriptorPool");
+    check_vk(vkResetDescriptorPool(impl_->device, keep, 0), "vkResetDescriptorPool");
 }
 
 VkDescriptorSet CommandEncoder::allocate_set(const VkDescriptorSetLayout layout) {
@@ -220,8 +273,8 @@ VkDescriptorSet CommandEncoder::allocate_set(const VkDescriptorSetLayout layout)
             pending_sets_.push_back(set);
             return set;
         }
-        const bool exhausted = result == VK_ERROR_OUT_OF_POOL_MEMORY ||
-                               result == VK_ERROR_FRAGMENTED_POOL;
+        const bool exhausted =
+            result == VK_ERROR_OUT_OF_POOL_MEMORY || result == VK_ERROR_FRAGMENTED_POOL;
         if (!exhausted || attempt == 1 || pool_sets_ >= (1u << 20)) {
             check_vk(result, "vkAllocateDescriptorSets");
         }
@@ -230,41 +283,64 @@ VkDescriptorSet CommandEncoder::allocate_set(const VkDescriptorSetLayout layout)
     throw std::runtime_error("vkAllocateDescriptorSets failed");
 }
 
-void CommandEncoder::bind_storage(
-    const ComputePipeline& pipeline, std::span<const BufferBinding> bindings) {
+void CommandEncoder::bind_storage(const ComputePipeline &pipeline,
+                                  std::span<const BufferBinding> bindings) {
     if (bindings.size() != pipeline.binding_count()) {
         throw std::invalid_argument("Descriptor binding count does not match pipeline");
     }
     descriptor_infos_.resize(bindings.size());
+    image_infos_.resize(bindings.size());
     descriptor_writes_.resize(bindings.size());
     acceleration_infos_.resize(bindings.size());
     for (std::uint32_t index = 0; index < bindings.size(); ++index) {
+        const auto &resource = bindings[index];
+        const int selected = int(resource.buffer != VK_NULL_HANDLE) +
+                             int(resource.acceleration_structure != VK_NULL_HANDLE) +
+                             int(resource.image_view != VK_NULL_HANDLE) +
+                             int(resource.sampler != VK_NULL_HANDLE);
+        if (selected != 1)
+            throw std::invalid_argument(
+                "Descriptor must reference exactly one typed resource");
         descriptor_infos_[index].buffer = bindings[index].buffer;
         descriptor_infos_[index].offset = bindings[index].offset;
         descriptor_infos_[index].range = bindings[index].range;
-        descriptor_writes_[index] = {
-            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        descriptor_writes_[index] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         descriptor_writes_[index].dstBinding = index;
         descriptor_writes_[index].descriptorCount = 1;
-        descriptor_writes_[index].descriptorType =
-            pipeline.descriptor_type(index);
-        auto& write = descriptor_writes_[index];
+        descriptor_writes_[index].descriptorType = pipeline.descriptor_type(index);
+        auto &write = descriptor_writes_[index];
         if (write.descriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR) {
             if (bindings[index].acceleration_structure == VK_NULL_HANDLE ||
                 bindings[index].buffer != VK_NULL_HANDLE) {
-                throw std::invalid_argument("Acceleration-structure descriptor requires an acceleration structure");
+                throw std::invalid_argument(
+                    "Acceleration-structure descriptor requires an acceleration "
+                    "structure");
             }
-            auto& acceleration = acceleration_infos_[index];
-            acceleration = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
+            auto &acceleration = acceleration_infos_[index];
+            acceleration = {
+                VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
             acceleration.accelerationStructureCount = 1;
-            acceleration.pAccelerationStructures = &bindings[index].acceleration_structure;
+            acceleration.pAccelerationStructures =
+                &bindings[index].acceleration_structure;
             write.pNext = &acceleration;
         } else if (write.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
             if (bindings[index].buffer == VK_NULL_HANDLE ||
-                bindings[index].acceleration_structure != VK_NULL_HANDLE || bindings[index].range == 0) {
-                throw std::invalid_argument("Storage descriptor requires a nonempty buffer");
+                bindings[index].acceleration_structure != VK_NULL_HANDLE ||
+                bindings[index].range == 0) {
+                throw std::invalid_argument(
+                    "Storage descriptor requires a nonempty buffer");
             }
             write.pBufferInfo = &descriptor_infos_[index];
+        } else if (write.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+                   write.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER) {
+            if ((write.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE &&
+                 bindings[index].image_view == VK_NULL_HANDLE) ||
+                (write.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER &&
+                 bindings[index].sampler == VK_NULL_HANDLE))
+                throw std::invalid_argument("Empty image/sampler descriptor");
+            image_infos_[index] = {bindings[index].sampler, bindings[index].image_view,
+                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            write.pImageInfo = &image_infos_[index];
         } else {
             throw std::invalid_argument("Unsupported compute descriptor type");
         }
@@ -278,20 +354,21 @@ void CommandEncoder::bind_storage(
         return;
     }
     const VkDescriptorSet set = allocate_set(pipeline.set_layout());
-    for (VkWriteDescriptorSet& write : descriptor_writes_) write.dstSet = set;
-    vkUpdateDescriptorSets(
-        impl_->device, static_cast<std::uint32_t>(descriptor_writes_.size()),
-        descriptor_writes_.data(), 0, nullptr);
-    vkCmdBindDescriptorSets(
-        command_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.layout(), 0, 1, &set, 0,
-        nullptr);
+    for (VkWriteDescriptorSet &write : descriptor_writes_) write.dstSet = set;
+    vkUpdateDescriptorSets(impl_->device,
+                           static_cast<std::uint32_t>(descriptor_writes_.size()),
+                           descriptor_writes_.data(), 0, nullptr);
+    vkCmdBindDescriptorSets(command_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.layout(),
+                            0, 1, &set, 0, nullptr);
 }
 
-void CommandEncoder::dispatch(
-    const ComputePipeline& pipeline, std::span<const BufferBinding> bindings,
-    const void* push_constants, const std::uint32_t push_bytes,
-    const std::uint32_t groups_x, const std::uint32_t groups_y,
-    const std::uint32_t groups_z) {
+void CommandEncoder::dispatch(const ComputePipeline &pipeline,
+                              std::span<const BufferBinding> bindings,
+                              const void *push_constants,
+                              const std::uint32_t push_bytes,
+                              const std::uint32_t groups_x,
+                              const std::uint32_t groups_y,
+                              const std::uint32_t groups_z) {
     if (groups_x == 0 || groups_y == 0 || groups_z == 0) return;
     begin();
     bind_storage(pipeline, bindings);
@@ -300,52 +377,50 @@ void CommandEncoder::dispatch(
     after_dispatch();
 }
 
-void CommandEncoder::dispatch_indirect(
-    const ComputePipeline& pipeline, std::span<const BufferBinding> bindings,
-    const void* push_constants, const std::uint32_t push_bytes,
-    const BufferBinding indirect) {
+void CommandEncoder::dispatch_indirect(const ComputePipeline &pipeline,
+                                       std::span<const BufferBinding> bindings,
+                                       const void *push_constants,
+                                       const std::uint32_t push_bytes,
+                                       const BufferBinding indirect) {
     if (indirect.buffer == VK_NULL_HANDLE) {
         throw std::invalid_argument("Indirect dispatch buffer is null");
     }
     begin();
     bind_storage(pipeline, bindings);
     push(pipeline, push_constants, push_bytes);
-    barrier(
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-        VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
+    barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
     vkCmdDispatchIndirect(command_, indirect.buffer, indirect.offset);
     after_dispatch();
 }
 
-void CommandEncoder::dispatch_indirect(
-    const ComputePipeline& pipeline, std::span<const BufferBinding> bindings,
-    const void* push_constants, const std::uint32_t push_bytes,
-    const Buffer& indirect, const VkDeviceSize offset) {
-    dispatch_indirect(
-        pipeline, bindings, push_constants, push_bytes,
-        binding(indirect, offset, sizeof(VkDispatchIndirectCommand)));
+void CommandEncoder::dispatch_indirect(const ComputePipeline &pipeline,
+                                       std::span<const BufferBinding> bindings,
+                                       const void *push_constants,
+                                       const std::uint32_t push_bytes,
+                                       const Buffer &indirect,
+                                       const VkDeviceSize offset) {
+    dispatch_indirect(pipeline, bindings, push_constants, push_bytes,
+                      binding(indirect, offset, sizeof(VkDispatchIndirectCommand)));
 }
 
-void CommandEncoder::fill_u32(
-    const Buffer& destination, const VkDeviceSize offset, const VkDeviceSize bytes,
-    const std::uint32_t value) {
+void CommandEncoder::fill_u32(const Buffer &destination, const VkDeviceSize offset,
+                              const VkDeviceSize bytes, const std::uint32_t value) {
     if (bytes == 0) return;
     begin();
-    vkCmdFillBuffer(
-        command_, destination.handle(), destination.offset() + offset, bytes, value);
-    barrier(
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
-            VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-        VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
-            VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
+    vkCmdFillBuffer(command_, destination.handle(), destination.offset() + offset,
+                    bytes, value);
+    barrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
+                VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+            VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
 }
 
-void CommandEncoder::copy(
-    const Buffer& destination, const VkDeviceSize destination_offset,
-    const Buffer& source, const VkDeviceSize source_offset,
-    const VkDeviceSize bytes) {
+void CommandEncoder::copy(const Buffer &destination,
+                          const VkDeviceSize destination_offset, const Buffer &source,
+                          const VkDeviceSize source_offset, const VkDeviceSize bytes) {
     if (bytes == 0) return;
     begin();
     VkBufferCopy region{};
@@ -353,12 +428,12 @@ void CommandEncoder::copy(
     region.dstOffset = destination.offset() + destination_offset;
     region.size = bytes;
     vkCmdCopyBuffer(command_, source.handle(), destination.handle(), 1, &region);
-    barrier(
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
-        VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
-            VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_HOST_READ_BIT);
+    barrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
+                VK_PIPELINE_STAGE_HOST_BIT,
+            VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_HOST_READ_BIT);
 }
 
 void CommandEncoder::submit() {
@@ -392,8 +467,8 @@ CommandEncoder Device::encoder(const BarrierPolicy policy) const {
     return CommandEncoder(impl_, policy);
 }
 
-EncoderRing::EncoderRing(
-    Device device, const std::uint32_t slots, const BarrierPolicy policy)
+EncoderRing::EncoderRing(Device device, const std::uint32_t slots,
+                         const BarrierPolicy policy)
     : device_(std::move(device)) {
     if (!device_.valid()) throw std::logic_error("photara_vk Device is empty");
     if (slots == 0) throw std::invalid_argument("EncoderRing needs at least one slot");
@@ -403,11 +478,9 @@ EncoderRing::EncoderRing(
     }
 }
 
-EncoderRing::EncoderRing(EncoderRing&& other) noexcept {
-    *this = std::move(other);
-}
+EncoderRing::EncoderRing(EncoderRing &&other) noexcept { *this = std::move(other); }
 
-EncoderRing& EncoderRing::operator=(EncoderRing&& other) noexcept {
+EncoderRing &EncoderRing::operator=(EncoderRing &&other) noexcept {
     if (this == &other) return *this;
     std::swap(device_, other.device_);
     std::swap(slots_, other.slots_);
@@ -415,7 +488,7 @@ EncoderRing& EncoderRing::operator=(EncoderRing&& other) noexcept {
     return *this;
 }
 
-CommandEncoder& EncoderRing::acquire() {
+CommandEncoder &EncoderRing::acquire() {
     if (slots_.empty()) throw std::logic_error("EncoderRing has no slots");
     slots_[index_].begin();
     return slots_[index_];
@@ -437,12 +510,12 @@ bool EncoderRing::recording() const {
     return !slots_.empty() && slots_[index_].recording();
 }
 
-CommandEncoder& EncoderRing::at(const std::uint32_t slot) {
+CommandEncoder &EncoderRing::at(const std::uint32_t slot) {
     if (slot >= slots_.size()) throw std::out_of_range("EncoderRing slot");
     return slots_[slot];
 }
 
-const CommandEncoder& EncoderRing::at(const std::uint32_t slot) const {
+const CommandEncoder &EncoderRing::at(const std::uint32_t slot) const {
     if (slot >= slots_.size()) throw std::out_of_range("EncoderRing slot");
     return slots_[slot];
 }

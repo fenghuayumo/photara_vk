@@ -22,6 +22,12 @@ Windowing, swapchain, and ImGui stay in the host application.
 - `DescriptorBinding` / `binding(scene)` for mixed storage-buffer and acceleration-
   structure descriptors, through push descriptors or allocated descriptor sets.
   `BufferBinding` remains a source-compatible alias.
+- Sampled `ImageView` and device-owned `Sampler` descriptors work through both
+  push descriptors and ordinary sets. `transition_image` and `copy_to_image`
+  support explicit color-image uploads (base 2D level, tightly packed supported
+  formats); callers keep the Image alive through its views and GPU submission.
+  `supports_linear_sampling` reports format support. The sampler uses bilinear
+  clamp-to-edge filtering at level zero. No implicit layout tracking is performed.
 - `Device::create_bottom_level` creates shared object-space triangle BLASes;
   `Device::create_instance_scene` builds a TLAS from transformed `TriangleInstance`
   records, including custom index and visibility mask. The TLAS retains its BLASes.
