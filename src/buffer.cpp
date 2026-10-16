@@ -127,6 +127,7 @@ Buffer::Buffer(Buffer&& other) noexcept {
 
 Buffer& Buffer::operator=(Buffer&& other) noexcept {
     if (this == &other) return *this;
+    std::swap(keep_, other.keep_);
     std::swap(device_, other.device_);
     std::swap(handle_, other.handle_);
     std::swap(memory_, other.memory_);
@@ -210,7 +211,9 @@ Buffer Device::create_buffer(
     if (device_address) {
         usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     }
-    return Buffer(impl_->physical, impl_->device, bytes, kind, usage, device_address);
+    Buffer buffer(impl_->physical, impl_->device, bytes, kind, usage, device_address);
+    buffer.keep_ = impl_;
+    return buffer;
 }
 
 }  // namespace photara::vk

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include <vulkan/vulkan.h>
@@ -40,6 +41,8 @@ public:
     [[nodiscard]] double elapsed_seconds(std::uint32_t start, std::uint32_t end) const;
 
 private:
+    friend class Device;
+    std::shared_ptr<void> keep_;
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueryPool pool_ = VK_NULL_HANDLE;
     std::uint32_t count_ = 0;

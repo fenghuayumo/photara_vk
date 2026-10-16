@@ -49,6 +49,7 @@ TimestampPool& TimestampPool::operator=(TimestampPool&& other) noexcept {
     if (device_ != VK_NULL_HANDLE && pool_ != VK_NULL_HANDLE) {
         vkDestroyQueryPool(device_, pool_, nullptr);
     }
+    keep_ = std::move(other.keep_);
     device_ = std::exchange(other.device_, VK_NULL_HANDLE);
     pool_ = std::exchange(other.pool_, VK_NULL_HANDLE);
     count_ = std::exchange(other.count_, 0U);
@@ -105,9 +106,11 @@ double TimestampPool::elapsed_seconds(
 TimestampPool Device::create_timestamp_pool(
     const std::uint32_t timestamp_count) const {
     if (!impl_) throw std::logic_error("photara_vk Device is empty");
-    return TimestampPool(
+    TimestampPool pool(
         impl_->device, timestamp_count, impl_->caps.timestamp_period_nanoseconds,
         impl_->caps.timestamp_valid_bits);
+    pool.keep_ = impl_;
+    return pool;
 }
 
 }  // namespace photara::vk

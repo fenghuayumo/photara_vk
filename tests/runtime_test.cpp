@@ -6,6 +6,10 @@
 #include "triangle.vs.hlsl.embedded.hpp"
 
 #include <cmath>
+#include <cstring>
+#include <utility>
+#include <thread>
+#include <exception>
 #include <cstdint>
 #include <iostream>
 #include <span>
@@ -137,6 +141,145 @@ void test_compute_add() {
     for (std::uint32_t i = 0; i < kCount; ++i) {
         require_near(output[i], input[i] + 3.5F, 1e-5F, "compute add");
     }
+}
+
+template<class F> void require_invalid(F action, const char* message) {
+    try { action(); }
+    catch (const std::invalid_argument&) { return; }
+    throw std::runtime_error(message);
+}
+
+void test_pipeline_cache(bool push_descriptors) {
+    DeviceRequest request;
+    request.validation = true;
+    request.synchronization_validation = true;
+    request.want.push_descriptors = push_descriptors;
+    auto device = Device::create(request);
+    auto cache = device.create_pipeline_cache();
+    auto first = device.create_compute(add_spirv(), 1, 8, &cache);
+    auto bytes = cache.data();
+    require(bytes.size() >= sizeof(VkPipelineCacheHeaderVersionOne), "cache has header");
+    auto restored = device.create_pipeline_cache(bytes);
+    auto pipeline = device.create_compute(add_spirv(), 1, 8, &restored);
+    auto moved = std::move(restored);
+    require(!restored.valid() && moved.valid(), "cache move construction");
+    cache = std::move(moved);
+    require(!moved.valid() && cache.valid(), "cache move assignment");
+
+    // A cache may be shared by builders and serialized at the same time.
+    std::exception_ptr worker_error;
+    std::jthread builder([&] {
+        try { auto built = device.create_compute(add_spirv(), 1, 8, &cache); }
+        catch (...) { worker_error = std::current_exception(); }
+    });
+    const auto concurrent_data = cache.data();
+    builder.join();
+    if (worker_error) std::rethrow_exception(worker_error);
+    require(!concurrent_data.empty(), "concurrent cache serialization");
+
+    auto foreign = Device::create(request);
+    require_invalid([&] { (void)foreign.create_compute(add_spirv(), 1, 8, &cache); },
+                    "foreign cache accepted");
+    PipelineCache empty;
+    require_invalid([&] { (void)device.create_compute(add_spirv(), 1, 8, &empty); },
+                    "empty cache accepted");
+    require_invalid([&] { (void)device.create_pipeline_cache(std::span(bytes).first(4)); },
+                    "truncated cache accepted");
+    const std::size_t offsets[] = {
+        offsetof(VkPipelineCacheHeaderVersionOne, headerSize),
+        offsetof(VkPipelineCacheHeaderVersionOne, headerVersion),
+        offsetof(VkPipelineCacheHeaderVersionOne, vendorID),
+        offsetof(VkPipelineCacheHeaderVersionOne, deviceID),
+        offsetof(VkPipelineCacheHeaderVersionOne, pipelineCacheUUID)};
+    for (auto offset : offsets) {
+        auto invalid = bytes;
+        invalid[offset] ^= std::byte{0xff};
+        require_invalid([&] { (void)device.create_pipeline_cache(invalid); },
+                        "incompatible cache header accepted");
+    }
+    require_invalid([&] { (void)device.create_compute({}, 1, 8, &cache); },
+                    "invalid SPIR-V accepted");
+    require_invalid([&] { (void)device.create_compute(add_spirv(), 1, 3, &cache); },
+                    "unaligned push constants accepted");
+
+    // Pipelines do not depend on the cache after creation.
+    cache = PipelineCache{};
+    auto gpu = device.create_buffer(64 * sizeof(float), MemoryKind::device_local);
+    auto output = device.create_buffer(64 * sizeof(float), MemoryKind::host_cached);
+    auto encoder = device.encoder();
+    encoder.fill_u32(gpu, 0, gpu.size(), 0);
+    struct Push { std::uint32_t count; float addend; } push{64, 6.25F};
+    const DescriptorBinding bindings[] = {binding(gpu)};
+    encoder.dispatch(pipeline, bindings, &push, sizeof(push), 1);
+    encoder.copy(output, 0, gpu, 0, gpu.size());
+    encoder.submit_wait();
+    std::vector<float> values(64);
+    output.download(values.data(), values.size() * sizeof(float));
+    for (float value : values) require_near(value, 6.25F, 1e-5F, "cached compute");
+    require(device.validation_error_count() == 0, "pipeline cache validation errors");
+    require(foreign.validation_error_count() == 0, "foreign cache validation errors");
+    std::cout << "pipeline cache: restored/dispatch/validation ok, push="
+              << device.caps().enabled.push_descriptors << "\n";
+}
+
+void test_resource_device_lifetime() {
+    // Each returned resource is the last owning reference to its original device.
+    auto buffer = [] {
+        auto device = make_device();
+        return device.create_buffer(16, MemoryKind::host_visible);
+    }();
+    const std::uint32_t value = 42;
+    std::uint32_t result = 0;
+    buffer.upload(&value, sizeof(value));
+    buffer.download(&result, sizeof(result));
+    require(result == value, "buffer retained device");
+    auto cache = [] {
+        auto device = make_device();
+        return device.create_pipeline_cache();
+    }();
+    require(!cache.data().empty(), "cache retained device");
+    struct OrphanPipeline { ComputePipeline pipeline; ExternalDevice handles; };
+    auto orphan = [] {
+        auto device = make_device();
+        return OrphanPipeline{device.create_compute(add_spirv(), 1, 8), device.handles()};
+    }();
+    {
+        // Adopted wrappers borrow the native device. Only orphan.pipeline owns it.
+        auto borrowed = Device::adopt(orphan.handles);
+        auto output = borrowed.create_buffer(64 * sizeof(float), MemoryKind::host_visible);
+        auto encoder = borrowed.encoder();
+        encoder.fill_u32(output, 0, output.size(), 0);
+        struct Push { std::uint32_t count; float addend; } push{64, 2.5F};
+        const DescriptorBinding bindings[] = {binding(output)};
+        encoder.dispatch(orphan.pipeline, bindings, &push, sizeof(push), 1);
+        encoder.barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                        VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
+        encoder.submit_wait();
+        std::vector<float> values(64);
+        output.download(values.data(), values.size() * sizeof(float));
+        for (float v : values) require_near(v, 2.5F, 1e-5F, "pipeline retained device");
+    }
+    auto pool = [] {
+        auto device = make_device();
+        if (device.caps().timestamp_valid_bits == 0) return TimestampPool{};
+        auto queries = device.create_timestamp_pool(2);
+        auto encoder = device.encoder();
+        encoder.reset_timestamps(queries);
+        encoder.write_timestamp(queries, 0, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+        encoder.write_timestamp(queries, 1, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        encoder.submit_wait();
+        return queries;
+    }();
+    if (pool.valid()) {
+        TimestampPool moved;
+        moved = std::move(pool);
+        require(!pool.valid() && moved.results().size() == 2, "timestamp retained device on move");
+    }
+    auto image = [] {
+        auto device = make_device();
+        return device.create_image(ImageDesc{});
+    }();
+    require(image.valid(), "image retained device");
 }
 
 void test_dispatch_indirect() {
@@ -444,6 +587,9 @@ int main() {
         test_fill_and_copy();
         test_timestamp_pool();
         test_compute_add();
+        test_pipeline_cache(true);
+        test_pipeline_cache(false);
+        test_resource_device_lifetime();
         test_dispatch_indirect();
         test_encoder_ring();
         test_adopt();

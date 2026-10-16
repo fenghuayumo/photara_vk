@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -14,7 +15,8 @@ public:
     ComputePipeline(
         VkDevice logical, std::span<const std::byte> spirv,
         std::span<const VkDescriptorType> descriptor_types,
-        std::uint32_t push_bytes, bool push_descriptors);
+        std::uint32_t push_bytes, bool push_descriptors,
+        VkPipelineCache cache = VK_NULL_HANDLE);
     ComputePipeline(
         VkDevice logical, std::span<const std::byte> spirv,
         std::uint32_t storage_buffer_count, std::uint32_t push_bytes,
@@ -43,6 +45,8 @@ public:
     }
 
 private:
+    friend class Device;
+    std::shared_ptr<void> keep_;
     VkDevice device_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout layout_ = VK_NULL_HANDLE;

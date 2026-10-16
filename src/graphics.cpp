@@ -114,6 +114,7 @@ Image::Image(Image&& other) noexcept { *this = std::move(other); }
 
 Image& Image::operator=(Image&& other) noexcept {
     if (this == &other) return *this;
+    std::swap(keep_, other.keep_);
     std::swap(device_, other.device_);
     std::swap(handle_, other.handle_);
     std::swap(memory_, other.memory_);
@@ -149,6 +150,7 @@ ImageView::ImageView(ImageView&& other) noexcept { *this = std::move(other); }
 
 ImageView& ImageView::operator=(ImageView&& other) noexcept {
     if (this == &other) return *this;
+    std::swap(keep_, other.keep_);
     std::swap(device_, other.device_);
     std::swap(handle_, other.handle_);
     return *this;
@@ -228,6 +230,7 @@ RenderPass::RenderPass(RenderPass&& other) noexcept { *this = std::move(other); 
 
 RenderPass& RenderPass::operator=(RenderPass&& other) noexcept {
     if (this == &other) return *this;
+    std::swap(keep_, other.keep_);
     std::swap(device_, other.device_);
     std::swap(handle_, other.handle_);
     return *this;
@@ -262,6 +265,7 @@ Framebuffer::Framebuffer(Framebuffer&& other) noexcept { *this = std::move(other
 
 Framebuffer& Framebuffer::operator=(Framebuffer&& other) noexcept {
     if (this == &other) return *this;
+    std::swap(keep_, other.keep_);
     std::swap(device_, other.device_);
     std::swap(handle_, other.handle_);
     return *this;
@@ -428,6 +432,7 @@ GraphicsPipeline::GraphicsPipeline(GraphicsPipeline&& other) noexcept {
 
 GraphicsPipeline& GraphicsPipeline::operator=(GraphicsPipeline&& other) noexcept {
     if (this == &other) return *this;
+    std::swap(keep_, other.keep_);
     std::swap(device_, other.device_);
     std::swap(layout_, other.layout_);
     std::swap(handle_, other.handle_);
@@ -437,32 +442,42 @@ GraphicsPipeline& GraphicsPipeline::operator=(GraphicsPipeline&& other) noexcept
 
 Image Device::create_image(const ImageDesc& desc) const {
     if (!impl_) throw std::logic_error("photara_vk Device is empty");
-    return Image(impl_->physical, impl_->device, desc);
+    Image resource(impl_->physical, impl_->device, desc);
+    resource.keep_ = impl_;
+    return resource;
 }
 
 ImageView Device::create_image_view(
     const VkImage image, const VkFormat format, const VkImageAspectFlags aspect) const {
     if (!impl_) throw std::logic_error("photara_vk Device is empty");
-    return ImageView(impl_->device, image, format, aspect);
+    ImageView resource(impl_->device, image, format, aspect);
+    resource.keep_ = impl_;
+    return resource;
 }
 
 RenderPass Device::create_render_pass(
     const std::span<const AttachmentDesc> attachments,
     const std::span<const SubpassDependencyDesc> dependencies) const {
     if (!impl_) throw std::logic_error("photara_vk Device is empty");
-    return RenderPass(impl_->device, attachments, dependencies);
+    RenderPass resource(impl_->device, attachments, dependencies);
+    resource.keep_ = impl_;
+    return resource;
 }
 
 Framebuffer Device::create_framebuffer(
     const RenderPass& render_pass, const std::span<const VkImageView> attachments,
     const std::uint32_t width, const std::uint32_t height) const {
     if (!impl_) throw std::logic_error("photara_vk Device is empty");
-    return Framebuffer(impl_->device, render_pass.handle(), attachments, width, height);
+    Framebuffer resource(impl_->device, render_pass.handle(), attachments, width, height);
+    resource.keep_ = impl_;
+    return resource;
 }
 
 GraphicsPipeline Device::create_graphics(const GraphicsDesc& desc) const {
     if (!impl_) throw std::logic_error("photara_vk Device is empty");
-    return GraphicsPipeline(impl_->device, desc);
+    GraphicsPipeline resource(impl_->device, desc);
+    resource.keep_ = impl_;
+    return resource;
 }
 
 }  // namespace photara::vk

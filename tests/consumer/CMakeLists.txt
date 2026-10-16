@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.24)
+project(photara_vk_consumer LANGUAGES CXX)
+find_package(photara_vk 0.2 CONFIG REQUIRED)
+add_executable(consumer main.cpp)
+target_link_libraries(consumer PRIVATE photara_vk::photara_vk)
+enable_testing()
+add_test(NAME consumer COMMAND consumer)

@@ -139,6 +139,7 @@ Capabilities make_caps(VkPhysicalDevice physical) {
     caps.api_version = properties.apiVersion;
     caps.max_shared_bytes = properties.limits.maxComputeSharedMemorySize;
     caps.max_push_constants = properties.limits.maxPushConstantsSize;
+    caps.max_storage_buffer_range = properties.limits.maxStorageBufferRange;
     caps.timestamp_period_nanoseconds =
         double(properties.limits.timestampPeriod);
     try {

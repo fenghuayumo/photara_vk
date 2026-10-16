@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <memory>
 
 #include <vulkan/vulkan.h>
 
@@ -34,6 +35,8 @@ public:
     [[nodiscard]] VkFormat format() const noexcept { return format_; }
 
 private:
+    friend class Device;
+    std::shared_ptr<void> keep_;
     VkDevice device_ = VK_NULL_HANDLE;
     VkImage handle_ = VK_NULL_HANDLE;
     VkDeviceMemory memory_ = VK_NULL_HANDLE;
@@ -57,6 +60,8 @@ public:
     [[nodiscard]] VkImageView handle() const noexcept { return handle_; }
 
 private:
+    friend class Device;
+    std::shared_ptr<void> keep_;
     VkDevice device_ = VK_NULL_HANDLE;
     VkImageView handle_ = VK_NULL_HANDLE;
 };
@@ -97,6 +102,8 @@ public:
     [[nodiscard]] VkRenderPass handle() const noexcept { return handle_; }
 
 private:
+    friend class Device;
+    std::shared_ptr<void> keep_;
     VkDevice device_ = VK_NULL_HANDLE;
     VkRenderPass handle_ = VK_NULL_HANDLE;
 };
@@ -118,6 +125,8 @@ public:
     [[nodiscard]] VkFramebuffer handle() const noexcept { return handle_; }
 
 private:
+    friend class Device;
+    std::shared_ptr<void> keep_;
     VkDevice device_ = VK_NULL_HANDLE;
     VkFramebuffer handle_ = VK_NULL_HANDLE;
 };
@@ -183,6 +192,8 @@ public:
     [[nodiscard]] VkPipelineLayout layout() const noexcept { return layout_; }
 
 private:
+    friend class Device;
+    std::shared_ptr<void> keep_;
     VkDevice device_ = VK_NULL_HANDLE;
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
     VkPipeline handle_ = VK_NULL_HANDLE;
