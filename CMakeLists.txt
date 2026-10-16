@@ -99,7 +99,7 @@ configure_package_config_file(cmake/photara_vkConfig.cmake.in
     "${CMAKE_CURRENT_BINARY_DIR}/photara_vkConfig.cmake"
     INSTALL_DESTINATION "${photara_vk_INSTALL_CMAKEDIR}")
 write_basic_package_version_file("${CMAKE_CURRENT_BINARY_DIR}/photara_vkConfigVersion.cmake"
-    VERSION 0.2.0 COMPATIBILITY SameMinorVersion)
+    VERSION 0.3.0 COMPATIBILITY SameMinorVersion)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/photara_vkConfig.cmake"
     "${CMAKE_CURRENT_BINARY_DIR}/photara_vkConfigVersion.cmake"
     cmake/PhotaraVkShaders.cmake cmake/embed_spir_v.cmake
