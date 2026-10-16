@@ -54,6 +54,7 @@ struct DeviceRequest {
     // k_best_device to pick the highest-scoring compute GPU.
     std::uint32_t device_index = k_best_device;
     bool validation = false;
+    bool synchronization_validation = false;
     Features want{.push_descriptors = true};
     std::vector<const char*> instance_extensions;
     VkSurfaceKHR present_surface = VK_NULL_HANDLE;
@@ -109,6 +110,7 @@ public:
     [[nodiscard]] const Capabilities& caps() const;
     [[nodiscard]] ExternalDevice handles() const;
     [[nodiscard]] bool owns_device() const noexcept;
+    [[nodiscard]] std::uint32_t validation_error_count() const noexcept;
     [[nodiscard]] std::mutex& queue_mutex() const;
 
     [[nodiscard]] Buffer create_buffer(
@@ -125,7 +127,14 @@ public:
         BarrierPolicy policy = BarrierPolicy::after_compute) const;
     [[nodiscard]] TriangleScene create_triangle_scene(
         std::span<const float> positions,
-        std::span<const std::uint32_t> indices) const;
+        std::span<const std::uint32_t> indices,
+        const TriangleSceneOptions& options = {}) const;
+    [[nodiscard]] std::shared_ptr<BottomLevel> create_bottom_level(
+        std::span<const float> positions, std::span<const std::uint32_t> indices,
+        const TriangleSceneOptions& options = {}) const;
+    [[nodiscard]] TriangleScene create_instance_scene(
+        std::span<const TriangleInstance> instances,
+        VkBuildAccelerationStructureFlagsKHR flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR) const;
     [[nodiscard]] Image create_image(const ImageDesc& desc) const;
     [[nodiscard]] ImageView create_image_view(
         VkImage image, VkFormat format, VkImageAspectFlags aspect) const;

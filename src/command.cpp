@@ -76,6 +76,7 @@ CommandEncoder& CommandEncoder::operator=(CommandEncoder&& other) noexcept {
     std::swap(pending_sets_, other.pending_sets_);
     std::swap(descriptor_infos_, other.descriptor_infos_);
     std::swap(descriptor_writes_, other.descriptor_writes_);
+    std::swap(acceleration_infos_, other.acceleration_infos_);
     std::swap(recording_, other.recording_);
     std::swap(in_flight_, other.in_flight_);
     return *this;
@@ -162,11 +163,12 @@ void CommandEncoder::push(
 void CommandEncoder::add_descriptor_pool(const std::uint32_t sets) {
     const VkDescriptorPoolSize sizes[] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * kDescriptorsPerSet},
+        {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, sets * kDescriptorsPerSet},
     };
     VkDescriptorPoolCreateInfo pool_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool_info.maxSets = sets;
-    pool_info.poolSizeCount = 1;
+    pool_info.poolSizeCount = impl_->caps.enabled.ray_query || impl_->caps.enabled.ray_tracing_pipeline ? 2 : 1;
     pool_info.pPoolSizes = sizes;
     VkDescriptorPool pool = VK_NULL_HANDLE;
     check_vk(vkCreateDescriptorPool(impl_->device, &pool_info, nullptr, &pool),
@@ -220,6 +222,7 @@ void CommandEncoder::bind_storage(
     }
     descriptor_infos_.resize(bindings.size());
     descriptor_writes_.resize(bindings.size());
+    acceleration_infos_.resize(bindings.size());
     for (std::uint32_t index = 0; index < bindings.size(); ++index) {
         descriptor_infos_[index].buffer = bindings[index].buffer;
         descriptor_infos_[index].offset = bindings[index].offset;
@@ -230,7 +233,26 @@ void CommandEncoder::bind_storage(
         descriptor_writes_[index].descriptorCount = 1;
         descriptor_writes_[index].descriptorType =
             pipeline.descriptor_type(index);
-        descriptor_writes_[index].pBufferInfo = &descriptor_infos_[index];
+        auto& write = descriptor_writes_[index];
+        if (write.descriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR) {
+            if (bindings[index].acceleration_structure == VK_NULL_HANDLE ||
+                bindings[index].buffer != VK_NULL_HANDLE) {
+                throw std::invalid_argument("Acceleration-structure descriptor requires an acceleration structure");
+            }
+            auto& acceleration = acceleration_infos_[index];
+            acceleration = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
+            acceleration.accelerationStructureCount = 1;
+            acceleration.pAccelerationStructures = &bindings[index].acceleration_structure;
+            write.pNext = &acceleration;
+        } else if (write.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+            if (bindings[index].buffer == VK_NULL_HANDLE ||
+                bindings[index].acceleration_structure != VK_NULL_HANDLE || bindings[index].range == 0) {
+                throw std::invalid_argument("Storage descriptor requires a nonempty buffer");
+            }
+            write.pBufferInfo = &descriptor_infos_[index];
+        } else {
+            throw std::invalid_argument("Unsupported compute descriptor type");
+        }
     }
     vkCmdBindPipeline(command_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.handle());
     if (pipeline.push_descriptors() && impl_->cmd_push_descriptor != nullptr) {
@@ -318,7 +340,7 @@ void CommandEncoder::copy(
     vkCmdCopyBuffer(command_, source.handle(), destination.handle(), 1, &region);
     barrier(
         VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
         VK_ACCESS_TRANSFER_WRITE_BIT,
         VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
             VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_HOST_READ_BIT);

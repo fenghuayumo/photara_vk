@@ -13,11 +13,25 @@
 
 namespace photara::vk {
 
-struct BufferBinding {
+// A single typed resource in a compute descriptor set. The legacy BufferBinding
+// spelling remains source-compatible with existing compute clients.
+struct DescriptorBinding {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceSize offset = 0;
     VkDeviceSize range = VK_WHOLE_SIZE;
+    VkAccelerationStructureKHR acceleration_structure = VK_NULL_HANDLE;
 };
+using BufferBinding = DescriptorBinding;
+
+[[nodiscard]] inline DescriptorBinding binding(VkAccelerationStructureKHR structure) {
+    DescriptorBinding result;
+    result.acceleration_structure = structure;
+    return result;
+}
+
+[[nodiscard]] inline DescriptorBinding binding(const TriangleScene& scene) {
+    return binding(scene.top_level());
+}
 
 [[nodiscard]] inline BufferBinding binding(
     const Buffer& buffer, const VkDeviceSize offset = 0,
@@ -108,6 +122,7 @@ private:
     // temporary vectors for every recorded operation.
     std::vector<VkDescriptorBufferInfo> descriptor_infos_;
     std::vector<VkWriteDescriptorSet> descriptor_writes_;
+    std::vector<VkWriteDescriptorSetAccelerationStructureKHR> acceleration_infos_;
     bool recording_ = false;
     bool in_flight_ = false;
 };

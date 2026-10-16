@@ -243,37 +243,12 @@ std::uint32_t trace_ray(
     } push{{origin_x, origin_y, origin_z, 0.001F},
            {direction_x, direction_y, direction_z, 10.F}};
     auto encoder = device.encoder(BarrierPolicy::none);
-    const VkCommandBuffer command = encoder.native();
     encoder.barrier(
         VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_ACCESS_HOST_WRITE_BIT,
         VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.handle());
-    VkAccelerationStructureKHR top = scene.top_level();
-    VkWriteDescriptorSetAccelerationStructureKHR acceleration{
-        VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
-    acceleration.accelerationStructureCount = 1;
-    acceleration.pAccelerationStructures = &top;
-    const VkDescriptorBufferInfo buffer_info{hits.handle(), 0, hits.size()};
-    VkWriteDescriptorSet writes[2]{};
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].pNext = &acceleration;
-    writes[0].dstBinding = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstBinding = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[1].pBufferInfo = &buffer_info;
-    const auto push_descriptors = reinterpret_cast<PFN_vkCmdPushDescriptorSetKHR>(
-        vkGetDeviceProcAddr(device.handle(), "vkCmdPushDescriptorSetKHR"));
-    require(push_descriptors != nullptr, "push descriptor entry point");
-    push_descriptors(
-        command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.layout(), 0, 2, writes);
-    vkCmdPushConstants(
-        command, pipeline.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-    vkCmdDispatch(command, 1, 1, 1);
+    const DescriptorBinding bindings[] = {binding(scene), binding(hits)};
+    encoder.dispatch(pipeline, bindings, &push, sizeof(push), 1);
     encoder.barrier(
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
         VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
@@ -283,8 +258,11 @@ std::uint32_t trace_ray(
     return hit;
 }
 
-void test_triangle_scene() {
+void test_triangle_scene(const bool push_descriptors) {
     DeviceRequest request;
+    request.validation = true;
+    request.synchronization_validation = true;
+    request.want.push_descriptors = push_descriptors;
     request.want.ray_query = true;
     auto device = Device::create(request);
     if (!device.caps().enabled.ray_query) {
@@ -292,7 +270,6 @@ void test_triangle_scene() {
         return;
     }
     require(device.caps().enabled.buffer_device_address, "ray query enables device address");
-    require(device.caps().enabled.push_descriptors, "ray query test needs push descriptors");
     bool rejected = false;
     try {
         const float none[] = {0.F};
@@ -306,7 +283,9 @@ void test_triangle_scene() {
         0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 1.F, 0.F,
     };
     const std::uint32_t indices[] = {0, 1, 2};
-    auto scene = device.create_triangle_scene(positions, indices);
+    TriangleSceneOptions options;
+    options.geometry_flags = 0;
+    auto scene = device.create_triangle_scene(positions, indices, options);
     require(scene.bottom_level() != VK_NULL_HANDLE, "bottom level");
     require(scene.top_level() != VK_NULL_HANDLE, "top level");
     TriangleScene moved = std::move(scene);
@@ -325,7 +304,21 @@ void test_triangle_scene() {
     require(
         trace_ray(device, moved, pipeline, hits, 2.F, 2.F, 1.F, 0.F, 0.F, -1.F) == 0,
         "ray misses the triangle");
-    std::cout << "triangle scene: hit and miss\n";
+    auto bottom=device.create_bottom_level(positions,indices,options);
+    std::weak_ptr<const BottomLevel> weak=bottom;
+    std::vector<TriangleInstance> instances(2);
+    instances[0].geometry=bottom; instances[0].custom_index=9;
+    instances[1].geometry=bottom; instances[1].custom_index=19;
+    instances[1].transform.matrix[0][3]=2;
+    auto shared_scene=device.create_instance_scene(instances);
+    bottom.reset(); instances.clear();
+    require(!weak.expired(), "TLAS must retain shared BLAS ownership");
+    require(trace_ray(device,shared_scene,pipeline,hits,2.2F,.2F,1,0,0,-1)==1,
+            "translated shared BLAS instance should be hit");
+    shared_scene=TriangleScene{};
+    require(weak.expired(), "BLAS should be released when its last TLAS is destroyed");
+    require(device.validation_error_count() == 0, "ray query validation errors");
+    std::cout << "triangle scene: alpha candidates, typed descriptors, push=" << push_descriptors << "\n";
 }
 
 void test_graphics_triangle() {
@@ -425,7 +418,8 @@ int main() {
         test_dispatch_indirect();
         test_encoder_ring();
         test_adopt();
-        test_triangle_scene();
+        test_triangle_scene(true);
+        test_triangle_scene(false);
         test_graphics_triangle();
     } catch (const std::exception& error) {
         std::cerr << "photara_vk runtime test failed: " << error.what() << "\n";

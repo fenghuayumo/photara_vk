@@ -64,9 +64,12 @@ void add_unique(std::vector<const char*>& list, const char* name) {
 }
 
 VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
-    VkDebugUtilsMessageSeverityFlagBitsEXT,
+    VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     VkDebugUtilsMessageTypeFlagsEXT,
-    const VkDebugUtilsMessengerCallbackDataEXT* data, void*) {
+    const VkDebugUtilsMessengerCallbackDataEXT* data, void* user) {
+    if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) && user) {
+        ++static_cast<Device::Impl*>(user)->validation_errors;
+    }
     if (data != nullptr && data->pMessage != nullptr) {
         std::fprintf(stderr, "photara_vk: %s\n", data->pMessage);
     }
@@ -145,6 +148,9 @@ void create_instance(Device::Impl& impl, const DeviceRequest& request) {
         }
         layers.push_back("VK_LAYER_KHRONOS_validation");
         add_unique(extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        if (request.synchronization_validation) {
+            add_unique(extensions, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
+        }
     }
 #ifdef VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME
     const bool portability =
@@ -172,6 +178,13 @@ void create_instance(Device::Impl& impl, const DeviceRequest& request) {
     create.ppEnabledLayerNames = layers.data();
     create.enabledExtensionCount = static_cast<std::uint32_t>(extensions.size());
     create.ppEnabledExtensionNames = extensions.data();
+    VkValidationFeatureEnableEXT sync_feature = VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT;
+    VkValidationFeaturesEXT validation_features{VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT};
+    if (request.validation && request.synchronization_validation) {
+        validation_features.enabledValidationFeatureCount = 1;
+        validation_features.pEnabledValidationFeatures = &sync_feature;
+        create.pNext = &validation_features;
+    }
     check_vk(vkCreateInstance(&create, nullptr, &impl.instance), "vkCreateInstance");
     impl.owns_instance = true;
 
@@ -188,6 +201,7 @@ void create_instance(Device::Impl& impl, const DeviceRequest& request) {
                                 VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                                 VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
             debug.pfnUserCallback = debug_callback;
+            debug.pUserData = &impl;
             check_vk(create_messenger(impl.instance, &debug, nullptr,
                                       &impl.debug_messenger),
                      "vkCreateDebugUtilsMessengerEXT");
@@ -636,6 +650,10 @@ ExternalDevice Device::handles() const {
 
 bool Device::owns_device() const noexcept {
     return impl_ != nullptr && impl_->owns_device;
+}
+
+std::uint32_t Device::validation_error_count() const noexcept {
+    return impl_ ? impl_->validation_errors.load() : 0;
 }
 
 std::mutex& queue_mutex(const VkQueue queue) {
