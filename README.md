@@ -89,7 +89,7 @@ cmake --install build --config Release --component photara_vk --prefix D:/sdk/ph
 An independent consumer sets `CMAKE_PREFIX_PATH` to the installation prefix:
 
 ```cmake
-find_package(photara_vk 0.2 CONFIG REQUIRED)
+find_package(photara_vk 0.3 CONFIG REQUIRED)
 target_link_libraries(my_app PRIVATE photara_vk::photara_vk)
 ```
 
