@@ -11,7 +11,8 @@ if(NOT TARGET photara_vk)
         src/pipeline.cpp
         src/command.cpp
         src/accel.cpp
-        src/graphics.cpp)
+        src/graphics.cpp
+        src/query.cpp)
     add_library(photara_vk::photara_vk ALIAS photara_vk)
 
     target_include_directories(photara_vk
@@ -30,6 +31,10 @@ if(NOT TARGET photara_vk)
     else()
         target_compile_options(photara_vk PRIVATE -Wall -Wextra -Wpedantic)
     endif()
+endif()
+
+if(PHOTARA_BUILD_TESTS OR BUILD_TESTING)
+    enable_testing()
 endif()
 
 find_program(PHOTARA_VK_DXC

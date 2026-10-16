@@ -2,6 +2,7 @@
 
 #include "photara_vk/buffer.hpp"
 #include "photara_vk/device.hpp"
+#include "photara_vk/query.hpp"
 #include "photara_vk/pipeline.hpp"
 
 #include <cstdint>
@@ -84,6 +85,10 @@ public:
     void barrier(
         VkPipelineStageFlags src_stage, VkPipelineStageFlags dst_stage,
         VkAccessFlags src_access, VkAccessFlags dst_access);
+    void reset_timestamps(const TimestampPool& pool);
+    void write_timestamp(
+        const TimestampPool& pool, std::uint32_t index,
+        VkPipelineStageFlagBits stage);
     void submit();
     void submit_wait();
     void wait();

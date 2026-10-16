@@ -145,6 +145,21 @@ void CommandEncoder::after_dispatch() {
     }
 }
 
+void CommandEncoder::reset_timestamps(const TimestampPool& pool) {
+    if (!pool.valid()) throw std::invalid_argument("TimestampPool is empty");
+    begin();
+    vkCmdResetQueryPool(command_, pool.handle(), 0, pool.count());
+}
+
+void CommandEncoder::write_timestamp(
+    const TimestampPool& pool, const std::uint32_t index,
+    const VkPipelineStageFlagBits stage) {
+    if (!pool.valid()) throw std::invalid_argument("TimestampPool is empty");
+    if (index >= pool.count()) throw std::out_of_range("TimestampPool query");
+    begin();
+    vkCmdWriteTimestamp(command_, stage, pool.handle(), index);
+}
+
 void CommandEncoder::push(
     const ComputePipeline& pipeline, const void* push_constants,
     const std::uint32_t push_bytes) {

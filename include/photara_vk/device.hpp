@@ -12,6 +12,7 @@
 
 #include "photara_vk/accel.hpp"
 #include "photara_vk/graphics.hpp"
+#include "photara_vk/query.hpp"
 
 namespace photara::vk {
 
@@ -82,6 +83,8 @@ struct Capabilities {
     std::uint32_t subgroup_size = 0;
     std::uint32_t max_shared_bytes = 0;
     std::uint32_t max_push_constants = 0;
+    std::uint32_t timestamp_valid_bits = 0;
+    double timestamp_period_nanoseconds = 0.0;
     Features enabled{};
 };
 
@@ -116,6 +119,8 @@ public:
     [[nodiscard]] Buffer create_buffer(
         VkDeviceSize bytes, MemoryKind kind,
         VkBufferUsageFlags extra_usage = 0) const;
+    [[nodiscard]] TimestampPool create_timestamp_pool(
+        std::uint32_t timestamp_count) const;
     [[nodiscard]] ComputePipeline create_compute(
         std::span<const std::byte> spirv, std::uint32_t storage_buffer_count,
         std::uint32_t push_bytes) const;

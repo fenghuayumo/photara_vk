@@ -15,6 +15,8 @@ Windowing, swapchain, and ImGui stay in the host application.
 - `ComputePipeline` from SPIR-V
 - `CommandEncoder`: `dispatch`, `dispatch_indirect`, `fill_u32`, `copy`,
   `submit`, `submit_wait`
+- `TimestampPool` and encoder timestamp/reset commands, with queue timestamp
+  period and valid-bits reporting
 - `BarrierPolicy`: `none`, `after_compute`, `after_compute_indirect`
 - `EncoderRing` for overlapping command buffers
 - `DescriptorBinding` / `binding(scene)` for mixed storage-buffer and acceleration-

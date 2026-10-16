@@ -117,6 +117,18 @@ int device_score(VkPhysicalDevice physical) {
     return 0;
 }
 
+std::uint32_t queue_timestamp_valid_bits(
+    const VkPhysicalDevice physical, const std::uint32_t queue_family) {
+    std::uint32_t count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, nullptr);
+    if (queue_family == VK_QUEUE_FAMILY_IGNORED || queue_family >= count) {
+        throw std::invalid_argument("Vulkan queue family is invalid");
+    }
+    std::vector<VkQueueFamilyProperties> families(count);
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, families.data());
+    return families[queue_family].timestampValidBits;
+}
+
 Capabilities make_caps(VkPhysicalDevice physical) {
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physical, &properties);
@@ -127,6 +139,14 @@ Capabilities make_caps(VkPhysicalDevice physical) {
     caps.api_version = properties.apiVersion;
     caps.max_shared_bytes = properties.limits.maxComputeSharedMemorySize;
     caps.max_push_constants = properties.limits.maxPushConstantsSize;
+    caps.timestamp_period_nanoseconds =
+        double(properties.limits.timestampPeriod);
+    try {
+        caps.timestamp_valid_bits = queue_timestamp_valid_bits(
+            physical, find_queue_family(physical, false, false, VK_NULL_HANDLE));
+    } catch (...) {
+        caps.timestamp_valid_bits = 0;
+    }
     VkPhysicalDeviceSubgroupProperties subgroup{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
     VkPhysicalDeviceProperties2 properties2{
@@ -241,6 +261,8 @@ void pick_physical(Device::Impl& impl, const DeviceRequest& request) {
     impl.queue_family = find_queue_family(
         impl.physical, request.want.graphics, request.want.present,
         request.present_surface);
+    impl.caps.timestamp_valid_bits = queue_timestamp_valid_bits(
+        impl.physical, impl.queue_family);
     vkGetPhysicalDeviceMemoryProperties(impl.physical, &impl.memory);
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(impl.physical, &properties);
@@ -573,6 +595,8 @@ Device Device::adopt(const ExternalDevice& external) {
     impl.queue = external.queue;
     impl.queue_family = external.queue_family;
     impl.caps = make_caps(external.physical);
+    impl.caps.timestamp_valid_bits = queue_timestamp_valid_bits(
+        impl.physical, impl.queue_family);
     impl.caps.enabled = external.enabled;
     vkGetPhysicalDeviceMemoryProperties(impl.physical, &impl.memory);
     VkPhysicalDeviceProperties properties{};

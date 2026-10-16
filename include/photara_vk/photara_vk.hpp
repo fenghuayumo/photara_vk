@@ -7,3 +7,4 @@
 #include "photara_vk/device.hpp"
 #include "photara_vk/graphics.hpp"
 #include "photara_vk/pipeline.hpp"
+#include "photara_vk/query.hpp"

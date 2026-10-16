@@ -78,6 +78,34 @@ void test_fill_and_copy() {
     for (float value : values) require_near(value, 1.F, 1e-6F, "fill_u32");
 }
 
+void test_timestamp_pool() {
+    auto device = make_device();
+    if (device.caps().timestamp_valid_bits == 0) {
+        std::cout << "timestamp pool: skipped (queue has no timestamp bits)\n";
+        return;
+    }
+    require(device.caps().timestamp_period_nanoseconds > 0.0,
+            "timestamp period");
+
+    auto pool = device.create_timestamp_pool(2);
+    require(pool.valid() && pool.count() == 2, "timestamp pool");
+    auto destination = device.create_buffer(16, MemoryKind::device_local);
+    auto encoder = device.encoder(BarrierPolicy::none);
+    encoder.reset_timestamps(pool);
+    encoder.write_timestamp(pool, 0, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+    encoder.fill_u32(destination, 0, 16, 0x3f800000u);
+    encoder.write_timestamp(pool, 1, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    encoder.submit_wait();
+
+    const auto timestamps = pool.results();
+    require(timestamps.size() == 2, "timestamp result count");
+    require(timestamps[1] >= timestamps[0], "timestamp ordering");
+    require(pool.elapsed_nanoseconds(0, 1) >= 0.0, "timestamp interval");
+    require(pool.elapsed_seconds(0, 1) >= 0.0, "timestamp interval seconds");
+    std::cout << "timestamp pool: "
+              << pool.elapsed_nanoseconds(0, 1) << " ns\n";
+}
+
 void test_compute_add() {
     auto device = make_device();
     constexpr std::uint32_t kCount = 256;
@@ -414,6 +442,7 @@ int main() {
         test_enumerate_and_create();
         test_host_buffer_roundtrip();
         test_fill_and_copy();
+        test_timestamp_pool();
         test_compute_add();
         test_dispatch_indirect();
         test_encoder_ring();
