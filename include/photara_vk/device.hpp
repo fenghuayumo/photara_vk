@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -36,6 +37,11 @@ struct Features {
     // shader_float64, which create() turns on when this request is granted.
     bool buffer_atomic_f64 = false;
     bool shader_float64 = false;
+    bool shader_int64 = false;
+    bool storage_image_write_without_format = false;
+    bool geometry_shader = false;
+    bool tessellation_shader = false;
+    bool synchronization2 = false;
     bool integer_dot_product = false;
     bool buffer_device_address = false;
     bool ray_query = false;
@@ -59,6 +65,12 @@ struct DeviceRequest {
     bool synchronization_validation = false;
     Features want{.push_descriptors = true};
     std::vector<const char *> instance_extensions;
+    std::vector<const char *> device_extensions;
+    // Called after the physical device is selected and before the logical
+    // device is created. Optional SDKs (NGX/DLSS) use it to append the device
+    // extensions they require without teaching this RHI about the SDK.
+    std::function<void(VkInstance, VkPhysicalDevice, std::vector<const char *> &)>
+        device_extension_query;
     VkSurfaceKHR present_surface = VK_NULL_HANDLE;
 };
 
@@ -116,6 +128,7 @@ public:
     [[nodiscard]] ExternalDevice handles() const;
     [[nodiscard]] bool owns_device() const noexcept;
     [[nodiscard]] std::uint32_t validation_error_count() const noexcept;
+    void reset_validation_errors() const noexcept;
     [[nodiscard]] std::mutex &queue_mutex() const;
 
     [[nodiscard]] Buffer create_buffer(VkDeviceSize bytes, MemoryKind kind,

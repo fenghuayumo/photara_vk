@@ -231,13 +231,14 @@ void CommandEncoder::add_descriptor_pool(const std::uint32_t sets) {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * kDescriptorsPerSet},
         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets * kDescriptorsPerSet},
         {VK_DESCRIPTOR_TYPE_SAMPLER, sets * kDescriptorsPerSet},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, sets * kDescriptorsPerSet},
         {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, sets * kDescriptorsPerSet},
     };
     VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool_info.maxSets = sets;
     pool_info.poolSizeCount =
-        impl_->caps.enabled.ray_query || impl_->caps.enabled.ray_tracing_pipeline ? 4
-                                                                                  : 3;
+        impl_->caps.enabled.ray_query || impl_->caps.enabled.ray_tracing_pipeline ? 5
+                                                                                  : 4;
     pool_info.pPoolSizes = sizes;
     VkDescriptorPool pool = VK_NULL_HANDLE;
     check_vk(vkCreateDescriptorPool(impl_->device, &pool_info, nullptr, &pool),
@@ -331,6 +332,12 @@ void CommandEncoder::bind_storage(const ComputePipeline &pipeline,
                     "Storage descriptor requires a nonempty buffer");
             }
             write.pBufferInfo = &descriptor_infos_[index];
+        } else if (write.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
+            if (bindings[index].image_view == VK_NULL_HANDLE)
+                throw std::invalid_argument("Empty storage-image descriptor");
+            image_infos_[index] = {VK_NULL_HANDLE, bindings[index].image_view,
+                                   VK_IMAGE_LAYOUT_GENERAL};
+            write.pImageInfo = &image_infos_[index];
         } else if (write.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
                    write.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER) {
             if ((write.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE &&
