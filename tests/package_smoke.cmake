@@ -1,0 +1,25 @@
+cmake_minimum_required(VERSION 3.24)
+function(run)
+    execute_process(COMMAND ${ARGV} RESULT_VARIABLE result)
+    if(NOT result EQUAL 0)
+        message(FATAL_ERROR "Package smoke command failed: ${ARGV}")
+    endif()
+endfunction()
+run("${CMAKE_COMMAND}" --install "${BUILD_DIR}" --config "${CONFIG}"
+    --component photara_vk --prefix "${TEST_DIR}/installed")
+# Install and relocate to detect exported paths that accidentally refer to the old prefix.
+string(RANDOM LENGTH 12 ALPHABET 0123456789abcdef relocation_id)
+set(relocated "${TEST_DIR}/relocated-${relocation_id}")
+file(RENAME "${TEST_DIR}/installed" "${relocated}")
+set(generator_options)
+if(PLATFORM)
+    list(APPEND generator_options -A "${PLATFORM}")
+endif()
+if(TOOLSET)
+    list(APPEND generator_options -T "${TOOLSET}")
+endif()
+run("${CMAKE_COMMAND}" -S "${SOURCE_DIR}" -B "${TEST_DIR}/consumer"
+    -G "${GENERATOR}" ${generator_options}
+    "-DCMAKE_PREFIX_PATH=${relocated}" "-Dphotara_vk_DIR=" "-DCMAKE_BUILD_TYPE=${CONFIG}")
+run("${CMAKE_COMMAND}" --build "${TEST_DIR}/consumer" --config "${CONFIG}")
+run("${CMAKE_CTEST_COMMAND}" --test-dir "${TEST_DIR}/consumer" -C "${CONFIG}" --output-on-failure)

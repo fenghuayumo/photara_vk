@@ -1,27 +1,55 @@
 #pragma once
 
-#include "photara_vk/buffer.hpp"
-#include "photara_vk/device.hpp"
-#include "photara_vk/pipeline.hpp"
+#include <vulkan/vulkan.h>
 
 #include <cstdint>
 #include <memory>
 #include <span>
 #include <vector>
 
-#include <vulkan/vulkan.h>
+#include "photara_vk/buffer.hpp"
+#include "photara_vk/device.hpp"
+#include "photara_vk/pipeline.hpp"
+#include "photara_vk/query.hpp"
 
 namespace photara::vk {
 
-struct BufferBinding {
+// A single typed resource in a compute descriptor set. The legacy BufferBinding
+// spelling remains source-compatible with existing compute clients.
+struct DescriptorBinding {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceSize offset = 0;
     VkDeviceSize range = VK_WHOLE_SIZE;
+    VkAccelerationStructureKHR acceleration_structure = VK_NULL_HANDLE;
+    VkImageView image_view = VK_NULL_HANDLE;
+    VkSampler sampler = VK_NULL_HANDLE;
 };
+using BufferBinding = DescriptorBinding;
 
-[[nodiscard]] inline BufferBinding binding(
-    const Buffer& buffer, const VkDeviceSize offset = 0,
-    const VkDeviceSize range = VK_WHOLE_SIZE) {
+[[nodiscard]] inline DescriptorBinding binding(const ImageView &image) {
+    DescriptorBinding result;
+    result.image_view = image.handle();
+    return result;
+}
+[[nodiscard]] inline DescriptorBinding binding(const Sampler &sampler) {
+    DescriptorBinding result;
+    result.sampler = sampler.handle();
+    return result;
+}
+
+[[nodiscard]] inline DescriptorBinding binding(VkAccelerationStructureKHR structure) {
+    DescriptorBinding result;
+    result.acceleration_structure = structure;
+    return result;
+}
+
+[[nodiscard]] inline DescriptorBinding binding(const TriangleScene &scene) {
+    return binding(scene.top_level());
+}
+
+[[nodiscard]] inline BufferBinding binding(const Buffer &buffer,
+                                           const VkDeviceSize offset = 0,
+                                           const VkDeviceSize range = VK_WHOLE_SIZE) {
     BufferBinding result;
     result.buffer = buffer.handle();
     result.offset = buffer.offset() + offset;
@@ -29,7 +57,7 @@ struct BufferBinding {
     return result;
 }
 
-[[nodiscard]] inline BufferBinding binding(const VkDescriptorBufferInfo& info) {
+[[nodiscard]] inline BufferBinding binding(const VkDescriptorBufferInfo &info) {
     BufferBinding result;
     result.buffer = info.buffer;
     result.offset = info.offset;
@@ -42,34 +70,38 @@ public:
     CommandEncoder() = default;
     CommandEncoder(std::shared_ptr<Device::Impl> impl, BarrierPolicy policy);
     ~CommandEncoder();
-    CommandEncoder(CommandEncoder&& other) noexcept;
-    CommandEncoder& operator=(CommandEncoder&& other) noexcept;
-    CommandEncoder(const CommandEncoder&) = delete;
-    CommandEncoder& operator=(const CommandEncoder&) = delete;
+    CommandEncoder(CommandEncoder &&other) noexcept;
+    CommandEncoder &operator=(CommandEncoder &&other) noexcept;
+    CommandEncoder(const CommandEncoder &) = delete;
+    CommandEncoder &operator=(const CommandEncoder &) = delete;
 
-    void dispatch(
-        const ComputePipeline& pipeline, std::span<const BufferBinding> bindings,
-        const void* push_constants, std::uint32_t push_bytes,
-        std::uint32_t groups_x, std::uint32_t groups_y = 1,
-        std::uint32_t groups_z = 1);
-    void dispatch_indirect(
-        const ComputePipeline& pipeline, std::span<const BufferBinding> bindings,
-        const void* push_constants, std::uint32_t push_bytes,
-        BufferBinding indirect);
-    void dispatch_indirect(
-        const ComputePipeline& pipeline, std::span<const BufferBinding> bindings,
-        const void* push_constants, std::uint32_t push_bytes,
-        const Buffer& indirect, VkDeviceSize offset);
-    void fill_u32(
-        const Buffer& destination, VkDeviceSize offset, VkDeviceSize bytes,
-        std::uint32_t value);
-    void copy(
-        const Buffer& destination, VkDeviceSize destination_offset,
-        const Buffer& source, VkDeviceSize source_offset, VkDeviceSize bytes);
+    void dispatch(const ComputePipeline &pipeline,
+                  std::span<const BufferBinding> bindings, const void *push_constants,
+                  std::uint32_t push_bytes, std::uint32_t groups_x,
+                  std::uint32_t groups_y = 1, std::uint32_t groups_z = 1);
+    void dispatch_indirect(const ComputePipeline &pipeline,
+                           std::span<const BufferBinding> bindings,
+                           const void *push_constants, std::uint32_t push_bytes,
+                           BufferBinding indirect);
+    void dispatch_indirect(const ComputePipeline &pipeline,
+                           std::span<const BufferBinding> bindings,
+                           const void *push_constants, std::uint32_t push_bytes,
+                           const Buffer &indirect, VkDeviceSize offset);
+    void fill_u32(const Buffer &destination, VkDeviceSize offset, VkDeviceSize bytes,
+                  std::uint32_t value);
+    void copy(const Buffer &destination, VkDeviceSize destination_offset,
+              const Buffer &source, VkDeviceSize source_offset, VkDeviceSize bytes);
     void barrier();
-    void barrier(
-        VkPipelineStageFlags src_stage, VkPipelineStageFlags dst_stage,
-        VkAccessFlags src_access, VkAccessFlags dst_access);
+    void transition_image(const Image &image, VkImageLayout old_layout,
+                          VkImageLayout new_layout, VkPipelineStageFlags src_stage,
+                          VkPipelineStageFlags dst_stage, VkAccessFlags src_access,
+                          VkAccessFlags dst_access);
+    void copy_to_image(const Image &destination, const Buffer &source);
+    void barrier(VkPipelineStageFlags src_stage, VkPipelineStageFlags dst_stage,
+                 VkAccessFlags src_access, VkAccessFlags dst_access);
+    void reset_timestamps(const TimestampPool &pool);
+    void write_timestamp(const TimestampPool &pool, std::uint32_t index,
+                         VkPipelineStageFlagBits stage);
     void submit();
     void submit_wait();
     void wait();
@@ -82,11 +114,10 @@ public:
 private:
     void begin();
     void retire();
-    void bind_storage(
-        const ComputePipeline& pipeline, std::span<const BufferBinding> bindings);
-    void push(
-        const ComputePipeline& pipeline, const void* push_constants,
-        std::uint32_t push_bytes);
+    void bind_storage(const ComputePipeline &pipeline,
+                      std::span<const BufferBinding> bindings);
+    void push(const ComputePipeline &pipeline, const void *push_constants,
+              std::uint32_t push_bytes);
     void after_dispatch();
     void add_descriptor_pool(std::uint32_t sets);
     void reset_descriptor_pools();
@@ -107,7 +138,9 @@ private:
     // Reused across dispatches so descriptor binding does not allocate two
     // temporary vectors for every recorded operation.
     std::vector<VkDescriptorBufferInfo> descriptor_infos_;
+    std::vector<VkDescriptorImageInfo> image_infos_;
     std::vector<VkWriteDescriptorSet> descriptor_writes_;
+    std::vector<VkWriteDescriptorSetAccelerationStructureKHR> acceleration_infos_;
     bool recording_ = false;
     bool in_flight_ = false;
 };
@@ -115,16 +148,15 @@ private:
 class EncoderRing {
 public:
     EncoderRing() = default;
-    EncoderRing(
-        Device device, std::uint32_t slots,
-        BarrierPolicy policy = BarrierPolicy::after_compute_indirect);
-    EncoderRing(EncoderRing&& other) noexcept;
-    EncoderRing& operator=(EncoderRing&& other) noexcept;
-    EncoderRing(const EncoderRing&) = delete;
-    EncoderRing& operator=(const EncoderRing&) = delete;
+    EncoderRing(Device device, std::uint32_t slots,
+                BarrierPolicy policy = BarrierPolicy::after_compute_indirect);
+    EncoderRing(EncoderRing &&other) noexcept;
+    EncoderRing &operator=(EncoderRing &&other) noexcept;
+    EncoderRing(const EncoderRing &) = delete;
+    EncoderRing &operator=(const EncoderRing &) = delete;
     ~EncoderRing() = default;
 
-    CommandEncoder& acquire();
+    CommandEncoder &acquire();
     void submit();
     void submit_wait();
 
@@ -133,8 +165,8 @@ public:
     [[nodiscard]] std::uint32_t size() const noexcept {
         return static_cast<std::uint32_t>(slots_.size());
     }
-    [[nodiscard]] CommandEncoder& at(std::uint32_t slot);
-    [[nodiscard]] const CommandEncoder& at(std::uint32_t slot) const;
+    [[nodiscard]] CommandEncoder &at(std::uint32_t slot);
+    [[nodiscard]] const CommandEncoder &at(std::uint32_t slot) const;
 
 private:
     Device device_;

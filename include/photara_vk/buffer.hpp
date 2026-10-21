@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 #include <vulkan/vulkan.h>
 
@@ -39,6 +40,8 @@ public:
     [[nodiscard]] VkDeviceAddress device_address() const;
 
 private:
+    friend class Device;
+    std::shared_ptr<void> keep_;
     VkDevice device_ = VK_NULL_HANDLE;
     VkBuffer handle_ = VK_NULL_HANDLE;
     VkDeviceMemory memory_ = VK_NULL_HANDLE;

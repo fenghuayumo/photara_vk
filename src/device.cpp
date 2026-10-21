@@ -64,9 +64,12 @@ void add_unique(std::vector<const char*>& list, const char* name) {
 }
 
 VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
-    VkDebugUtilsMessageSeverityFlagBitsEXT,
+    VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     VkDebugUtilsMessageTypeFlagsEXT,
-    const VkDebugUtilsMessengerCallbackDataEXT* data, void*) {
+    const VkDebugUtilsMessengerCallbackDataEXT* data, void* user) {
+    if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) && user) {
+        ++static_cast<Device::Impl*>(user)->validation_errors;
+    }
     if (data != nullptr && data->pMessage != nullptr) {
         std::fprintf(stderr, "photara_vk: %s\n", data->pMessage);
     }
@@ -114,6 +117,18 @@ int device_score(VkPhysicalDevice physical) {
     return 0;
 }
 
+std::uint32_t queue_timestamp_valid_bits(
+    const VkPhysicalDevice physical, const std::uint32_t queue_family) {
+    std::uint32_t count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, nullptr);
+    if (queue_family == VK_QUEUE_FAMILY_IGNORED || queue_family >= count) {
+        throw std::invalid_argument("Vulkan queue family is invalid");
+    }
+    std::vector<VkQueueFamilyProperties> families(count);
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, families.data());
+    return families[queue_family].timestampValidBits;
+}
+
 Capabilities make_caps(VkPhysicalDevice physical) {
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physical, &properties);
@@ -124,6 +139,15 @@ Capabilities make_caps(VkPhysicalDevice physical) {
     caps.api_version = properties.apiVersion;
     caps.max_shared_bytes = properties.limits.maxComputeSharedMemorySize;
     caps.max_push_constants = properties.limits.maxPushConstantsSize;
+    caps.max_storage_buffer_range = properties.limits.maxStorageBufferRange;
+    caps.timestamp_period_nanoseconds =
+        double(properties.limits.timestampPeriod);
+    try {
+        caps.timestamp_valid_bits = queue_timestamp_valid_bits(
+            physical, find_queue_family(physical, false, false, VK_NULL_HANDLE));
+    } catch (...) {
+        caps.timestamp_valid_bits = 0;
+    }
     VkPhysicalDeviceSubgroupProperties subgroup{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
     VkPhysicalDeviceProperties2 properties2{
@@ -145,6 +169,9 @@ void create_instance(Device::Impl& impl, const DeviceRequest& request) {
         }
         layers.push_back("VK_LAYER_KHRONOS_validation");
         add_unique(extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        if (request.synchronization_validation) {
+            add_unique(extensions, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
+        }
     }
 #ifdef VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME
     const bool portability =
@@ -172,6 +199,13 @@ void create_instance(Device::Impl& impl, const DeviceRequest& request) {
     create.ppEnabledLayerNames = layers.data();
     create.enabledExtensionCount = static_cast<std::uint32_t>(extensions.size());
     create.ppEnabledExtensionNames = extensions.data();
+    VkValidationFeatureEnableEXT sync_feature = VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT;
+    VkValidationFeaturesEXT validation_features{VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT};
+    if (request.validation && request.synchronization_validation) {
+        validation_features.enabledValidationFeatureCount = 1;
+        validation_features.pEnabledValidationFeatures = &sync_feature;
+        create.pNext = &validation_features;
+    }
     check_vk(vkCreateInstance(&create, nullptr, &impl.instance), "vkCreateInstance");
     impl.owns_instance = true;
 
@@ -188,6 +222,7 @@ void create_instance(Device::Impl& impl, const DeviceRequest& request) {
                                 VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                                 VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
             debug.pfnUserCallback = debug_callback;
+            debug.pUserData = &impl;
             check_vk(create_messenger(impl.instance, &debug, nullptr,
                                       &impl.debug_messenger),
                      "vkCreateDebugUtilsMessengerEXT");
@@ -227,6 +262,8 @@ void pick_physical(Device::Impl& impl, const DeviceRequest& request) {
     impl.queue_family = find_queue_family(
         impl.physical, request.want.graphics, request.want.present,
         request.present_surface);
+    impl.caps.timestamp_valid_bits = queue_timestamp_valid_bits(
+        impl.physical, impl.queue_family);
     vkGetPhysicalDeviceMemoryProperties(impl.physical, &impl.memory);
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(impl.physical, &properties);
@@ -247,6 +284,12 @@ void create_logical(Device::Impl& impl, const DeviceRequest& request) {
         extensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
     }
 #endif
+    if (request.device_extension_query) {
+        request.device_extension_query(impl.instance, impl.physical, extensions);
+    }
+    for (const char* extension : request.device_extensions) {
+        if (extension != nullptr) add_unique(extensions, extension);
+    }
 
     Features& enabled = impl.caps.enabled;
     enabled = {};
@@ -255,9 +298,12 @@ void create_logical(Device::Impl& impl, const DeviceRequest& request) {
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceVulkan12Features vk12_query{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceSynchronization2Features sync2_query{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
     VkPhysicalDeviceFeatures2 features_query{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     features_query.pNext = &vk12_query;
+    vk12_query.pNext = &sync2_query;
     vkGetPhysicalDeviceFeatures2(impl.physical, &features_query);
 
 #ifdef VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME
@@ -265,6 +311,16 @@ void create_logical(Device::Impl& impl, const DeviceRequest& request) {
         has_device_extension(impl.physical, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME)) {
         extensions.push_back(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
         enabled.push_descriptors = true;
+    }
+#endif
+#ifdef VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+    VkPhysicalDeviceSynchronization2Features sync2{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
+    if (request.want.synchronization2 && sync2_query.synchronization2) {
+        if (has_device_extension(impl.physical, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME))
+            add_unique(extensions, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+        sync2.synchronization2 = VK_TRUE;
+        enabled.synchronization2 = true;
     }
 #endif
 
@@ -280,10 +336,29 @@ void create_logical(Device::Impl& impl, const DeviceRequest& request) {
     VkPhysicalDeviceFeatures2 shader_features{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     bool enable_shader_float64 = false;
+    if (request.want.shader_int64 && features_query.features.shaderInt64) {
+        shader_features.features.shaderInt64 = VK_TRUE;
+        enabled.shader_int64 = true;
+    }
     if (request.want.shader_float64 && features_query.features.shaderFloat64) {
         shader_features.features.shaderFloat64 = VK_TRUE;
         enabled.shader_float64 = true;
         enable_shader_float64 = true;
+    }
+    if (request.want.storage_image_write_without_format &&
+        features_query.features.shaderStorageImageWriteWithoutFormat) {
+        shader_features.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+        enabled.storage_image_write_without_format = true;
+    }
+    if ((request.want.geometry_shader || request.want.graphics) &&
+        features_query.features.geometryShader) {
+        shader_features.features.geometryShader = VK_TRUE;
+        enabled.geometry_shader = true;
+    }
+    if ((request.want.tessellation_shader || request.want.graphics) &&
+        features_query.features.tessellationShader) {
+        shader_features.features.tessellationShader = VK_TRUE;
+        enabled.tessellation_shader = true;
     }
 
 #ifdef VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME
@@ -450,8 +525,15 @@ void create_logical(Device::Impl& impl, const DeviceRequest& request) {
         feature.pNext = pNext;
         pNext = &feature;
     };
+#ifdef VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+    if (sync2.synchronization2) push_feature(sync2);
+#endif
     if (vk12.bufferDeviceAddress || vk12.timelineSemaphore) push_feature(vk12);
-    if (enable_shader_float64) push_feature(shader_features);
+    if (enable_shader_float64 || shader_features.features.shaderInt64 ||
+        shader_features.features.shaderStorageImageWriteWithoutFormat ||
+        shader_features.features.geometryShader ||
+        shader_features.features.tessellationShader)
+        push_feature(shader_features);
 #ifdef VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME
     if (atomic.shaderBufferFloat32AtomicAdd || atomic.shaderBufferFloat64AtomicAdd) {
         push_feature(atomic);
@@ -559,6 +641,8 @@ Device Device::adopt(const ExternalDevice& external) {
     impl.queue = external.queue;
     impl.queue_family = external.queue_family;
     impl.caps = make_caps(external.physical);
+    impl.caps.timestamp_valid_bits = queue_timestamp_valid_bits(
+        impl.physical, impl.queue_family);
     impl.caps.enabled = external.enabled;
     vkGetPhysicalDeviceMemoryProperties(impl.physical, &impl.memory);
     VkPhysicalDeviceProperties properties{};
@@ -636,6 +720,13 @@ ExternalDevice Device::handles() const {
 
 bool Device::owns_device() const noexcept {
     return impl_ != nullptr && impl_->owns_device;
+}
+
+std::uint32_t Device::validation_error_count() const noexcept {
+    return impl_ ? impl_->validation_errors.load() : 0;
+}
+void Device::reset_validation_errors() const noexcept {
+    if (impl_) impl_->validation_errors.store(0);
 }
 
 std::mutex& queue_mutex(const VkQueue queue) {

@@ -84,33 +84,41 @@ Buffer::Buffer(
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     check_vk(vkCreateBuffer(device_, &buffer_info, nullptr, &handle_),
              "vkCreateBuffer");
+    try {
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device_, handle_, &requirements);
+        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocation.allocationSize = requirements.size;
+        allocation.memoryTypeIndex =
+            select_memory_type(physical, requirements.memoryTypeBits, kind);
+        VkMemoryAllocateFlagsInfo flags{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+        if (device_address) {
+            flags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+            allocation.pNext = &flags;
+        }
+        check_vk(vkAllocateMemory(device_, &allocation, nullptr, &memory_),
+                 ("vkAllocateMemory (buffer bytes " + std::to_string(size_) +
+                  ", allocation bytes " + std::to_string(allocation.allocationSize) +
+                  ", memory type " + std::to_string(allocation.memoryTypeIndex) + ")").c_str());
+        check_vk(vkBindBufferMemory(device_, handle_, memory_, 0), "vkBindBufferMemory");
 
-    VkMemoryRequirements requirements{};
-    vkGetBufferMemoryRequirements(device_, handle_, &requirements);
-    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    allocation.allocationSize = requirements.size;
-    allocation.memoryTypeIndex =
-        select_memory_type(physical, requirements.memoryTypeBits, kind);
-    VkMemoryAllocateFlagsInfo flags{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
-    if (device_address) {
-        flags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
-        allocation.pNext = &flags;
-    }
-    check_vk(vkAllocateMemory(device_, &allocation, nullptr, &memory_),
-             "vkAllocateMemory");
-    check_vk(vkBindBufferMemory(device_, handle_, memory_, 0), "vkBindBufferMemory");
-
-    VkPhysicalDeviceMemoryProperties properties{};
-    vkGetPhysicalDeviceMemoryProperties(physical, &properties);
-    const auto memory_flags =
-        properties.memoryTypes[allocation.memoryTypeIndex].propertyFlags;
-    if ((memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
-        check_vk(vkMapMemory(device_, memory_, 0, size_, 0, &mapped_), "vkMapMemory");
-        coherent_ = (memory_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
-        VkPhysicalDeviceProperties limits{};
-        vkGetPhysicalDeviceProperties(physical, &limits);
-        non_coherent_atom_size_ =
-            std::max<VkDeviceSize>(limits.limits.nonCoherentAtomSize, 1);
+        VkPhysicalDeviceMemoryProperties properties{};
+        vkGetPhysicalDeviceMemoryProperties(physical, &properties);
+        const auto memory_flags =
+            properties.memoryTypes[allocation.memoryTypeIndex].propertyFlags;
+        if ((memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+            check_vk(vkMapMemory(device_, memory_, 0, size_, 0, &mapped_), "vkMapMemory");
+            coherent_ = (memory_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+            VkPhysicalDeviceProperties limits{};
+            vkGetPhysicalDeviceProperties(physical, &limits);
+            non_coherent_atom_size_ =
+                std::max<VkDeviceSize>(limits.limits.nonCoherentAtomSize, 1);
+        }
+    } catch (...) {
+        if (mapped_ != nullptr) vkUnmapMemory(device_, memory_);
+        vkDestroyBuffer(device_, handle_, nullptr);
+        if (memory_ != VK_NULL_HANDLE) vkFreeMemory(device_, memory_, nullptr);
+        throw;
     }
 }
 
@@ -127,6 +135,7 @@ Buffer::Buffer(Buffer&& other) noexcept {
 
 Buffer& Buffer::operator=(Buffer&& other) noexcept {
     if (this == &other) return *this;
+    std::swap(keep_, other.keep_);
     std::swap(device_, other.device_);
     std::swap(handle_, other.handle_);
     std::swap(memory_, other.memory_);
@@ -210,7 +219,9 @@ Buffer Device::create_buffer(
     if (device_address) {
         usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     }
-    return Buffer(impl_->physical, impl_->device, bytes, kind, usage, device_address);
+    Buffer buffer(impl_->physical, impl_->device, bytes, kind, usage, device_address);
+    buffer.keep_ = impl_;
+    return buffer;
 }
 
 }  // namespace photara::vk

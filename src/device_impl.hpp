@@ -3,6 +3,7 @@
 #include "photara_vk/device.hpp"
 
 #include <mutex>
+#include <atomic>
 
 #include <vulkan/vulkan.h>
 
@@ -23,6 +24,7 @@ struct Device::Impl {
     mutable std::mutex pool_mutex;
     VkPhysicalDeviceMemoryProperties memory{};
     VkDeviceSize non_coherent_atom_size = 1;
+    std::atomic_uint32_t validation_errors{0};
 
     void ensure_command_pool();
     ~Impl();

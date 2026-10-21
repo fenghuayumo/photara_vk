@@ -16,8 +16,10 @@ void main()
     ray.TMin = push_constants.origin_tmin.w;
     ray.Direction = push_constants.direction_tmax.xyz;
     ray.TMax = push_constants.direction_tmax.w;
-    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
-    query.TraceRayInline(scene, RAY_FLAG_FORCE_OPAQUE, 0xff, ray);
-    query.Proceed();
+    RayQuery<RAY_FLAG_NONE> query;
+    query.TraceRayInline(scene, RAY_FLAG_NONE, 0xff, ray);
+    while (query.Proceed()) {
+        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE) query.CommitNonOpaqueTriangleHit();
+    }
     hits[0] = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 1u : 0u;
 }
