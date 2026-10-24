@@ -63,7 +63,8 @@ private:
     std::shared_ptr<void> keep_;
     VkDevice device_ = VK_NULL_HANDLE;
     std::vector<std::shared_ptr<const BottomLevel>> geometry_;
-    Buffer instances_, storage_;
+    Buffer instances_, storage_, update_scratch_;
+    VkBuildAccelerationStructureFlagsKHR build_flags_ = 0;
     VkAccelerationStructureKHR top_level_ = VK_NULL_HANDLE;
     PFN_vkDestroyAccelerationStructureKHR destroy_ = nullptr;
 };

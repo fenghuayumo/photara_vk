@@ -156,6 +156,7 @@ public:
         std::span<const TriangleInstance> instances,
         VkBuildAccelerationStructureFlagsKHR flags =
             VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR) const;
+    void update_instance_scene(TriangleScene &scene, std::span<const TriangleInstance> instances) const;
     [[nodiscard]] Image create_image(const ImageDesc &desc) const;
     [[nodiscard]] Sampler create_sampler() const;
     [[nodiscard]] bool supports_linear_sampling(VkFormat format) const;
