@@ -23,6 +23,7 @@ struct DescriptorBinding {
     VkAccelerationStructureKHR acceleration_structure = VK_NULL_HANDLE;
     VkImageView image_view = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
+    std::span<const VkDescriptorImageInfo> images{};
 };
 using BufferBinding = DescriptorBinding;
 

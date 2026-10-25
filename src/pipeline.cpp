@@ -15,11 +15,18 @@ ComputePipeline::ComputePipeline(VkDevice logical, std::span<const std::byte> sp
                                  std::span<const VkDescriptorType> descriptor_types,
                                  const std::uint32_t push_bytes,
                                  const bool push_descriptors,
-                                 const VkPipelineCache cache)
+                                 const VkPipelineCache cache,
+                                 std::span<const std::uint32_t> descriptor_counts)
     : device_(logical),
       types_(descriptor_types.begin(), descriptor_types.end()),
       push_bytes_(push_bytes),
       push_descriptors_(push_descriptors) {
+    counts_.assign(types_.size(), 1);
+    if (!descriptor_counts.empty()) {
+        if (descriptor_counts.size()!=types_.size()) throw std::invalid_argument("Descriptor count size mismatch");
+        counts_.assign(descriptor_counts.begin(), descriptor_counts.end());
+        for (auto count : counts_) if (!count) throw std::invalid_argument("Empty descriptor array");
+    }
     if (logical == VK_NULL_HANDLE || spirv.size() < 20 || spirv.size() % 4 != 0)
         throw std::invalid_argument("Invalid compute device or SPIR-V bytecode");
     std::uint32_t magic = 0;
@@ -30,7 +37,7 @@ ComputePipeline::ComputePipeline(VkDevice logical, std::span<const std::byte> sp
         for (std::uint32_t index = 0; index < types_.size(); ++index) {
             bindings[index].binding = index;
             bindings[index].descriptorType = types_[index];
-            bindings[index].descriptorCount = 1;
+            bindings[index].descriptorCount = counts_[index];
             bindings[index].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         }
 
@@ -123,6 +130,7 @@ ComputePipeline& ComputePipeline::operator=(ComputePipeline&& other) noexcept {
     std::swap(types_, other.types_);
     std::swap(push_bytes_, other.push_bytes_);
     std::swap(push_descriptors_, other.push_descriptors_);
+    std::swap(counts_, other.counts_);
     return *this;
 }
 
@@ -138,7 +146,7 @@ ComputePipeline Device::create_compute(std::span<const std::byte> spirv,
 ComputePipeline Device::create_compute(
     std::span<const std::byte> spirv,
     std::span<const VkDescriptorType> descriptor_types, const std::uint32_t push_bytes,
-    const PipelineCache* cache) const {
+    const PipelineCache* cache, std::span<const std::uint32_t> descriptor_counts) const {
     if (!impl_) throw std::logic_error("photara_vk Device is empty");
     if (push_bytes % 4 != 0 || push_bytes > impl_->caps.max_push_constants)
         throw std::invalid_argument(
@@ -153,7 +161,7 @@ ComputePipeline Device::create_compute(
         handle = cache->impl_->handle;
     }
     ComputePipeline pipeline(impl_->device, spirv, descriptor_types, push_bytes,
-                             impl_->caps.enabled.push_descriptors, handle);
+                             impl_->caps.enabled.push_descriptors, handle, descriptor_counts);
     pipeline.keep_ = impl_;
     return pipeline;
 }

@@ -137,7 +137,7 @@ void CommandEncoder::transition_image(const Image &image, VkImageLayout old_layo
     info.newLayout = new_layout;
     info.srcQueueFamilyIndex = info.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     info.image = image.handle();
-    info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, image.mip_levels(), 0, 1};
     vkCmdPipelineBarrier(command_, src_stage, dst_stage, 0, 0, nullptr, 0, nullptr, 1,
                          &info);
 }
@@ -161,17 +161,23 @@ void CommandEncoder::copy_to_image(const Image &destination, const Buffer &sourc
             throw std::invalid_argument(
                 "copy_to_image requires a supported tightly packed color format");
     }
-    if (source.size() <
-            uint64_t(destination.width()) * destination.height() * texel_bytes ||
-        source.offset() % 4)
+    std::vector<VkBufferImageCopy> regions;
+    VkDeviceSize offset = source.offset();
+    for (uint32_t level=0; level<destination.mip_levels(); ++level) {
+        const auto width=std::max(1u,destination.width()>>level);
+        const auto height=std::max(1u,destination.height()>>level);
+        VkBufferImageCopy region{};
+        region.bufferOffset=offset;
+        region.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,level,0,1};
+        region.imageExtent={width,height,1};
+        regions.push_back(region);
+        offset+=VkDeviceSize(width)*height*texel_bytes;
+    }
+    if (source.size() < offset-source.offset() || source.offset()%4)
         throw std::invalid_argument("Image upload buffer is too small or misaligned");
     begin();
-    VkBufferImageCopy region{};
-    region.bufferOffset = source.offset();
-    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    region.imageExtent = {destination.width(), destination.height(), 1};
     vkCmdCopyBufferToImage(command_, source.handle(), destination.handle(),
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, uint32_t(regions.size()), regions.data());
 }
 
 void CommandEncoder::after_dispatch() {
@@ -229,7 +235,7 @@ void CommandEncoder::push(const ComputePipeline &pipeline, const void *push_cons
 void CommandEncoder::add_descriptor_pool(const std::uint32_t sets) {
     const VkDescriptorPoolSize sizes[] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * kDescriptorsPerSet},
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets * kDescriptorsPerSet},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets * 512},
         {VK_DESCRIPTOR_TYPE_SAMPLER, sets * kDescriptorsPerSet},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, sets * kDescriptorsPerSet},
         {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, sets * kDescriptorsPerSet},
@@ -298,7 +304,7 @@ void CommandEncoder::bind_storage(const ComputePipeline &pipeline,
         const int selected = int(resource.buffer != VK_NULL_HANDLE) +
                              int(resource.acceleration_structure != VK_NULL_HANDLE) +
                              int(resource.image_view != VK_NULL_HANDLE) +
-                             int(resource.sampler != VK_NULL_HANDLE);
+                             int(resource.sampler != VK_NULL_HANDLE) + int(!resource.images.empty());
         if (selected != 1)
             throw std::invalid_argument(
                 "Descriptor must reference exactly one typed resource");
@@ -307,9 +313,17 @@ void CommandEncoder::bind_storage(const ComputePipeline &pipeline,
         descriptor_infos_[index].range = bindings[index].range;
         descriptor_writes_[index] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         descriptor_writes_[index].dstBinding = index;
-        descriptor_writes_[index].descriptorCount = 1;
+        descriptor_writes_[index].descriptorCount = pipeline.descriptor_count(index);
         descriptor_writes_[index].descriptorType = pipeline.descriptor_type(index);
         auto &write = descriptor_writes_[index];
+        if (!resource.images.empty()) {
+            if (write.descriptorType != VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+                resource.images.size() != write.descriptorCount)
+                throw std::invalid_argument("Sampled-image array size/type mismatch");
+            write.pImageInfo = resource.images.data();
+            continue;
+        }
+        if (write.descriptorCount != 1) throw std::invalid_argument("Expected descriptor array");
         if (write.descriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR) {
             if (bindings[index].acceleration_structure == VK_NULL_HANDLE ||
                 bindings[index].buffer != VK_NULL_HANDLE) {

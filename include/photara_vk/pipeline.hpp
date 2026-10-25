@@ -16,7 +16,8 @@ public:
         VkDevice logical, std::span<const std::byte> spirv,
         std::span<const VkDescriptorType> descriptor_types,
         std::uint32_t push_bytes, bool push_descriptors,
-        VkPipelineCache cache = VK_NULL_HANDLE);
+        VkPipelineCache cache = VK_NULL_HANDLE,
+        std::span<const std::uint32_t> descriptor_counts = {});
     ComputePipeline(
         VkDevice logical, std::span<const std::byte> spirv,
         std::uint32_t storage_buffer_count, std::uint32_t push_bytes,
@@ -43,6 +44,7 @@ public:
     [[nodiscard]] VkDescriptorType descriptor_type(std::uint32_t index) const {
         return types_[index];
     }
+    [[nodiscard]] std::uint32_t descriptor_count(std::uint32_t index) const { return counts_[index]; }
 
 private:
     friend class Device;
@@ -52,6 +54,7 @@ private:
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
     VkPipeline handle_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorType> types_;
+    std::vector<std::uint32_t> counts_;
     std::uint32_t push_bytes_ = 0;
     bool push_descriptors_ = false;
 };

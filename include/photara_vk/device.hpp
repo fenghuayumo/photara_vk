@@ -51,6 +51,7 @@ struct Features {
     bool timeline_semaphore = false;
     bool graphics = false;
     bool present = false;
+    bool sampled_image_nonuniform = false;
 };
 
 inline constexpr std::uint32_t k_best_device =
@@ -143,7 +144,8 @@ public:
     [[nodiscard]] ComputePipeline create_compute(
         std::span<const std::byte> spirv,
         std::span<const VkDescriptorType> descriptor_types, std::uint32_t push_bytes,
-        const PipelineCache *cache = nullptr) const;
+        const PipelineCache *cache = nullptr,
+        std::span<const std::uint32_t> descriptor_counts = {}) const;
     [[nodiscard]] CommandEncoder encoder(
         BarrierPolicy policy = BarrierPolicy::after_compute) const;
     [[nodiscard]] TriangleScene create_triangle_scene(
@@ -158,10 +160,10 @@ public:
             VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR) const;
     void update_instance_scene(TriangleScene &scene, std::span<const TriangleInstance> instances) const;
     [[nodiscard]] Image create_image(const ImageDesc &desc) const;
-    [[nodiscard]] Sampler create_sampler() const;
+    [[nodiscard]] Sampler create_sampler(bool repeat = false, float max_lod = 0) const;
     [[nodiscard]] bool supports_linear_sampling(VkFormat format) const;
     [[nodiscard]] ImageView create_image_view(VkImage image, VkFormat format,
-                                              VkImageAspectFlags aspect) const;
+                                             VkImageAspectFlags aspect, std::uint32_t mip_levels = 1) const;
     [[nodiscard]] RenderPass create_render_pass(
         std::span<const AttachmentDesc> attachments,
         std::span<const SubpassDependencyDesc> dependencies) const;

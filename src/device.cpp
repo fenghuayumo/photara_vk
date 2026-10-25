@@ -305,6 +305,10 @@ void create_logical(Device::Impl& impl, const DeviceRequest& request) {
     features_query.pNext = &vk12_query;
     vk12_query.pNext = &sync2_query;
     vkGetPhysicalDeviceFeatures2(impl.physical, &features_query);
+    if (request.want.sampled_image_nonuniform && vk12_query.shaderSampledImageArrayNonUniformIndexing) {
+        vk12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+        enabled.sampled_image_nonuniform = true;
+    }
 
 #ifdef VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME
     if (request.want.push_descriptors &&
@@ -528,7 +532,7 @@ void create_logical(Device::Impl& impl, const DeviceRequest& request) {
 #ifdef VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
     if (sync2.synchronization2) push_feature(sync2);
 #endif
-    if (vk12.bufferDeviceAddress || vk12.timelineSemaphore) push_feature(vk12);
+    if (vk12.bufferDeviceAddress || vk12.timelineSemaphore || vk12.shaderSampledImageArrayNonUniformIndexing) push_feature(vk12);
     if (enable_shader_float64 || shader_features.features.shaderInt64 ||
         shader_features.features.shaderStorageImageWriteWithoutFormat ||
         shader_features.features.geometryShader ||
