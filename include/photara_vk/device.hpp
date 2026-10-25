@@ -52,6 +52,7 @@ struct Features {
     bool graphics = false;
     bool present = false;
     bool sampled_image_nonuniform = false;
+    bool shader_device_clock = false;
 };
 
 inline constexpr std::uint32_t k_best_device =
