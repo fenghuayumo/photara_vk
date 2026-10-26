@@ -66,6 +66,42 @@ using BufferBinding = DescriptorBinding;
     return result;
 }
 
+// Immutable descriptor contents, reusable across command buffers and compatible
+// pipelines. Referenced resources must remain alive until GPU use completes.
+// Encoders retain the set itself until the submission that uses it retires.
+class ComputeDescriptors {
+  public:
+    ComputeDescriptors() = default;
+    [[nodiscard]] bool valid() const noexcept {
+        return impl_ != nullptr;
+    }
+
+  private:
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
+    friend class CommandEncoder;
+};
+
+// Counts actual RHI calls over this encoder's lifetime. Indirect dispatches count
+// even when their GPU-generated group count is zero. Fence waits count API calls,
+// including waits on fences that have already signaled, not blocking duration.
+// Commands recorded through native() are outside these counters.
+struct CommandStatistics {
+    std::uint64_t direct_dispatch_count = 0;
+    std::uint64_t indirect_dispatch_count = 0;
+    std::uint64_t submission_count = 0;
+    std::uint64_t fence_wait_count = 0;
+    std::uint64_t descriptor_set_allocations = 0;
+    std::uint64_t descriptor_set_updates = 0;
+    std::uint64_t descriptor_set_binds = 0;
+    std::uint64_t push_descriptor_updates = 0;
+    std::uint64_t pipeline_binds = 0;
+
+    [[nodiscard]] std::uint64_t dispatch_count() const noexcept {
+        return direct_dispatch_count + indirect_dispatch_count;
+    }
+};
+
 class CommandEncoder {
 public:
     CommandEncoder() = default;
@@ -76,6 +112,17 @@ public:
     CommandEncoder(const CommandEncoder &) = delete;
     CommandEncoder &operator=(const CommandEncoder &) = delete;
 
+    [[nodiscard]] ComputeDescriptors prepare_descriptors(const ComputePipeline &pipeline,
+                                                         std::span<const BufferBinding> bindings);
+    void dispatch(const ComputePipeline &pipeline, const ComputeDescriptors &descriptors,
+                  const void *push_constants, std::uint32_t push_bytes, std::uint32_t groups_x,
+                  std::uint32_t groups_y = 1, std::uint32_t groups_z = 1);
+    void dispatch_indirect(const ComputePipeline &pipeline, const ComputeDescriptors &descriptors,
+                           const void *push_constants, std::uint32_t push_bytes,
+                           BufferBinding indirect);
+    void dispatch_indirect(const ComputePipeline &pipeline, const ComputeDescriptors &descriptors,
+                           const void *push_constants, std::uint32_t push_bytes,
+                           const Buffer &indirect, VkDeviceSize offset);
     void dispatch(const ComputePipeline &pipeline,
                   std::span<const BufferBinding> bindings, const void *push_constants,
                   std::uint32_t push_bytes, std::uint32_t groups_x,
@@ -111,12 +158,18 @@ public:
     [[nodiscard]] VkFence fence() const noexcept { return fence_; }
     [[nodiscard]] bool recording() const noexcept { return recording_; }
     [[nodiscard]] bool in_flight() const noexcept { return in_flight_; }
+    [[nodiscard]] const CommandStatistics &statistics() const noexcept {
+        return statistics_;
+    }
 
 private:
     void begin();
     void retire();
     void bind_storage(const ComputePipeline &pipeline,
                       std::span<const BufferBinding> bindings);
+    void bind_storage(const ComputePipeline &pipeline, const ComputeDescriptors &descriptors);
+    void prepare_writes(const ComputePipeline &pipeline, std::span<const BufferBinding> bindings);
+    void bind_pipeline(const ComputePipeline &pipeline);
     void push(const ComputePipeline &pipeline, const void *push_constants,
               std::uint32_t push_bytes);
     void after_dispatch();
@@ -142,6 +195,11 @@ private:
     std::vector<VkDescriptorImageInfo> image_infos_;
     std::vector<VkWriteDescriptorSet> descriptor_writes_;
     std::vector<VkWriteDescriptorSetAccelerationStructureKHR> acceleration_infos_;
+    std::vector<std::shared_ptr<ComputeDescriptors::Impl>> retained_descriptors_;
+    VkPipeline bound_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSet bound_set_ = VK_NULL_HANDLE;
+    VkPipelineLayout bound_layout_ = VK_NULL_HANDLE;
+    CommandStatistics statistics_;
     bool recording_ = false;
     bool in_flight_ = false;
 };

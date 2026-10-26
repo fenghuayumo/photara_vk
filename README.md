@@ -15,6 +15,19 @@ Windowing, swapchain, and ImGui stay in the host application.
 - `ComputePipeline` from SPIR-V, optionally using a device-compatible `PipelineCache`
 - `CommandEncoder`: `dispatch`, `dispatch_indirect`, `fill_u32`, `copy`,
   `submit`, `submit_wait`
+- `CommandEncoder::prepare_descriptors` creates immutable `ComputeDescriptors`
+  for ordinary non-push descriptor pipelines. Both dispatch APIs accept the
+  prepared set across submissions and pipelines with identical descriptor
+  types/counts. Preparing snapshots image-array entries; changing the source
+  binding array later does not update a prepared set. Create a new set when
+  resources change. Referenced buffers, views, samplers and acceleration
+  structures must outlive GPU use; encoders retain the set/pool through retirement.
+- `CommandEncoder::statistics()` reports actual direct/indirect dispatch,
+  queue-submission and fence-wait API counts over the encoder's lifetime, plus
+  descriptor allocations/updates/binds and pipeline binds. Empty submits/waits
+  do not count. Zero-group indirect commands do count. A fence-wait call need
+  not block. Raw Vulkan calls through `native()` are excluded; obtaining the
+  native command buffer invalidates cached binding state.
 - `TimestampPool` and encoder timestamp/reset commands, with queue timestamp
   period and valid-bits reporting
 - `BarrierPolicy`: `none`, `after_compute`, `after_compute_indirect`
@@ -54,6 +67,18 @@ const photara::vk::DescriptorBinding resources[] = {
     photara::vk::binding(scene), photara::vk::binding(output_buffer)
 };
 encoder.dispatch(pipeline, resources, &constants, sizeof(constants), groups);
+```
+
+For a pipeline created with push descriptors disabled, prepare once and reuse:
+
+```cpp
+auto descriptors = encoder.prepare_descriptors(pipeline, resources);
+encoder.dispatch(pipeline, descriptors, &first_constants, sizeof(first_constants), groups);
+encoder.dispatch(pipeline, descriptors, &next_constants, sizeof(next_constants), groups);
+encoder.submit_wait();
+encoder.dispatch(pipeline, descriptors, &last_constants, sizeof(last_constants), groups);
+encoder.submit_wait();
+auto counts = encoder.statistics(); // 3 dispatches, 2 submissions, 2 fence waits, 1 set update
 ```
 
 The caller must keep Buffer/Pipeline resources alive until the encoder finishes.
