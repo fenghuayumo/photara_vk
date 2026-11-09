@@ -15,7 +15,8 @@ ComputePipeline::ComputePipeline(VkDevice logical, std::span<const std::byte> sp
                                  std::span<const VkDescriptorType> descriptor_types,
                                  const std::uint32_t push_bytes,
                                  const bool push_descriptors,
-                                 const VkPipelineCache cache)
+                                 const VkPipelineCache cache,
+                                 const std::uint32_t required_subgroup_size)
     : device_(logical),
       types_(descriptor_types.begin(), descriptor_types.end()),
       push_bytes_(push_bytes),
@@ -74,6 +75,12 @@ ComputePipeline::ComputePipeline(VkDevice logical, std::span<const std::byte> sp
         stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         stage.module = module;
         stage.pName = "main";
+        VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroup{
+            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO_EXT};
+        if (required_subgroup_size != 0) {
+            subgroup.requiredSubgroupSize = required_subgroup_size;
+            stage.pNext = &subgroup;
+        }
         VkComputePipelineCreateInfo pipeline_info{
             VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         pipeline_info.stage = stage;
@@ -93,11 +100,13 @@ ComputePipeline::ComputePipeline(VkDevice logical, std::span<const std::byte> sp
 ComputePipeline::ComputePipeline(VkDevice logical, std::span<const std::byte> spirv,
                                  const std::uint32_t storage_buffer_count,
                                  const std::uint32_t push_bytes,
-                                 const bool push_descriptors)
+                                 const bool push_descriptors,
+                                 const std::uint32_t required_subgroup_size)
     : ComputePipeline() {
     std::vector<VkDescriptorType> types(storage_buffer_count,
                                         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-    *this = ComputePipeline(logical, spirv, types, push_bytes, push_descriptors);
+    *this = ComputePipeline(logical, spirv, types, push_bytes, push_descriptors,
+                            VK_NULL_HANDLE, required_subgroup_size);
 }
 
 ComputePipeline::~ComputePipeline() {

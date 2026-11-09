@@ -568,6 +568,27 @@ void create_logical(Device::Impl& impl, const DeviceRequest& request) {
 
 }  // namespace
 
+bool supports_compute_subgroup_size(VkPhysicalDevice physical, const std::uint32_t size,
+                                    const std::uint32_t workgroup_invocations) {
+    if (size == 0 || (size & (size - 1)) != 0 ||
+        !has_device_extension(physical, VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME))
+        return false;
+    VkPhysicalDeviceSubgroupSizeControlFeaturesEXT feature{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES_EXT};
+    VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    features.pNext = &feature;
+    vkGetPhysicalDeviceFeatures2(physical, &features);
+    if (!feature.subgroupSizeControl) return false;
+    VkPhysicalDeviceSubgroupSizeControlPropertiesEXT sizes{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES_EXT};
+    VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    properties.pNext = &sizes;
+    vkGetPhysicalDeviceProperties2(physical, &properties);
+    return size >= sizes.minSubgroupSize && size <= sizes.maxSubgroupSize &&
+        (sizes.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
+        (workgroup_invocations + size - 1u) / size <= sizes.maxComputeWorkgroupSubgroups;
+}
+
 void Device::Impl::ensure_command_pool() {
     std::lock_guard lock(pool_mutex);
     if (command_pool != VK_NULL_HANDLE) return;

@@ -16,11 +16,12 @@ public:
         VkDevice logical, std::span<const std::byte> spirv,
         std::span<const VkDescriptorType> descriptor_types,
         std::uint32_t push_bytes, bool push_descriptors,
-        VkPipelineCache cache = VK_NULL_HANDLE);
+        VkPipelineCache cache = VK_NULL_HANDLE,
+        std::uint32_t required_subgroup_size = 0);
     ComputePipeline(
         VkDevice logical, std::span<const std::byte> spirv,
         std::uint32_t storage_buffer_count, std::uint32_t push_bytes,
-        bool push_descriptors);
+        bool push_descriptors, std::uint32_t required_subgroup_size = 0);
     ~ComputePipeline();
     ComputePipeline(ComputePipeline&& other) noexcept;
     ComputePipeline& operator=(ComputePipeline&& other) noexcept;

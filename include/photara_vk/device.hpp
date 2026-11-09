@@ -18,6 +18,11 @@
 
 namespace photara::vk {
 
+// Checks the optional EXT feature, compute-stage size range, and workgroup
+// subgroup-count limit. The caller must still enable the feature on VkDevice.
+[[nodiscard]] bool supports_compute_subgroup_size(
+    VkPhysicalDevice physical, std::uint32_t size, std::uint32_t workgroup_invocations);
+
 class ComputePipeline;
 class CommandEncoder;
 
