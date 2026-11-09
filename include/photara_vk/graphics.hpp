@@ -12,7 +12,7 @@ namespace photara::vk {
 class Sampler {
 public:
     Sampler() = default;
-    explicit Sampler(VkDevice device);
+    explicit Sampler(VkDevice device, bool repeat = false, float max_lod = 0);
     ~Sampler();
     Sampler(Sampler &&other) noexcept;
     Sampler &operator=(Sampler &&other) noexcept;
@@ -34,6 +34,7 @@ struct ImageDesc {
     VkImageUsageFlags usage =
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     VkMemoryPropertyFlags memory = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    std::uint32_t mip_levels = 1;
 };
 
 class Image {
@@ -51,6 +52,7 @@ public:
     [[nodiscard]] std::uint32_t width() const noexcept { return width_; }
     [[nodiscard]] std::uint32_t height() const noexcept { return height_; }
     [[nodiscard]] VkFormat format() const noexcept { return format_; }
+    [[nodiscard]] std::uint32_t mip_levels() const noexcept { return mip_levels_; }
 
 private:
     friend class Device;
@@ -61,13 +63,14 @@ private:
     std::uint32_t width_ = 0;
     std::uint32_t height_ = 0;
     VkFormat format_ = VK_FORMAT_UNDEFINED;
+    std::uint32_t mip_levels_ = 1;
 };
 
 class ImageView {
 public:
     ImageView() = default;
     ImageView(VkDevice device, VkImage image, VkFormat format,
-              VkImageAspectFlags aspect);
+              VkImageAspectFlags aspect, std::uint32_t mip_levels = 1);
     ~ImageView();
     ImageView(ImageView &&other) noexcept;
     ImageView &operator=(ImageView &&other) noexcept;

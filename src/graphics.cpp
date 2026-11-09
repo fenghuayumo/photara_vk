@@ -64,7 +64,7 @@ struct ShaderModule {
 
 Image::Image(const VkPhysicalDevice physical, const VkDevice device,
              const ImageDesc &desc)
-    : device_(device), width_(desc.width), height_(desc.height), format_(desc.format) {
+    : device_(device), width_(desc.width), height_(desc.height), format_(desc.format), mip_levels_(desc.mip_levels) {
     if (device_ == VK_NULL_HANDLE || desc.width == 0 || desc.height == 0 ||
         desc.format == VK_FORMAT_UNDEFINED || desc.usage == 0) {
         throw std::invalid_argument("Image description is incomplete");
@@ -73,7 +73,7 @@ Image::Image(const VkPhysicalDevice physical, const VkDevice device,
     info.imageType = VK_IMAGE_TYPE_2D;
     info.format = desc.format;
     info.extent = {desc.width, desc.height, 1};
-    info.mipLevels = 1;
+    info.mipLevels = desc.mip_levels;
     info.arrayLayers = 1;
     info.samples = VK_SAMPLE_COUNT_1_BIT;
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -110,14 +110,14 @@ Image::~Image() {
     if (memory_ != VK_NULL_HANDLE) vkFreeMemory(device_, memory_, nullptr);
 }
 
-Sampler::Sampler(VkDevice device) : device_(device) {
+Sampler::Sampler(VkDevice device, bool repeat, float max_lod) : device_(device) {
     if (device == VK_NULL_HANDLE) throw std::invalid_argument("Empty sampler device");
     VkSamplerCreateInfo info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     info.magFilter = info.minFilter = VK_FILTER_LINEAR;
-    info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     info.addressModeU = info.addressModeV = info.addressModeW =
-        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    info.maxLod = 0;
+        repeat ? VK_SAMPLER_ADDRESS_MODE_REPEAT : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.maxLod = max_lod;
     check_vk(vkCreateSampler(device, &info, nullptr, &handle_), "vkCreateSampler");
 }
 Sampler::~Sampler() {
@@ -130,9 +130,9 @@ Sampler &Sampler::operator=(Sampler &&other) noexcept {
     std::swap(handle_, other.handle_);
     return *this;
 }
-Sampler Device::create_sampler() const {
+Sampler Device::create_sampler(bool repeat, float max_lod) const {
     if (!impl_) throw std::logic_error("Empty device");
-    Sampler value(handle());
+    Sampler value(handle(), repeat, max_lod);
     value.keep_ = impl_;
     return value;
 }
@@ -156,11 +156,12 @@ Image &Image::operator=(Image &&other) noexcept {
     std::swap(width_, other.width_);
     std::swap(height_, other.height_);
     std::swap(format_, other.format_);
+    std::swap(mip_levels_, other.mip_levels_);
     return *this;
 }
 
 ImageView::ImageView(const VkDevice device, const VkImage image, const VkFormat format,
-                     const VkImageAspectFlags aspect)
+                     const VkImageAspectFlags aspect, const std::uint32_t mip_levels)
     : device_(device) {
     if (device == VK_NULL_HANDLE || image == VK_NULL_HANDLE ||
         format == VK_FORMAT_UNDEFINED || aspect == 0) {
@@ -170,7 +171,7 @@ ImageView::ImageView(const VkDevice device, const VkImage image, const VkFormat 
     info.image = image;
     info.viewType = VK_IMAGE_VIEW_TYPE_2D;
     info.format = format;
-    info.subresourceRange = {aspect, 0, 1, 0, 1};
+    info.subresourceRange = {aspect, 0, mip_levels, 0, 1};
     check_vk(vkCreateImageView(device_, &info, nullptr, &handle_), "vkCreateImageView");
 }
 
@@ -488,9 +489,9 @@ Image Device::create_image(const ImageDesc &desc) const {
 }
 
 ImageView Device::create_image_view(const VkImage image, const VkFormat format,
-                                    const VkImageAspectFlags aspect) const {
+                                    const VkImageAspectFlags aspect, const std::uint32_t mip_levels) const {
     if (!impl_) throw std::logic_error("photara_vk Device is empty");
-    ImageView resource(impl_->device, image, format, aspect);
+    ImageView resource(impl_->device, image, format, aspect, mip_levels);
     resource.keep_ = impl_;
     return resource;
 }

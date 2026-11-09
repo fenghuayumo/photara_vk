@@ -151,7 +151,9 @@ TriangleScene::TriangleScene(TriangleScene&& other) noexcept { *this = std::move
 TriangleScene& TriangleScene::operator=(TriangleScene&& other) noexcept {
     if(this == &other) return *this;
     std::swap(keep_,other.keep_); std::swap(device_,other.device_); std::swap(geometry_,other.geometry_);
+    std::swap(update_scratch_,other.update_scratch_);
     std::swap(instances_,other.instances_); std::swap(storage_,other.storage_);
+    std::swap(build_flags_,other.build_flags_);
     std::swap(top_level_,other.top_level_); std::swap(destroy_,other.destroy_); return *this;
 }
 std::shared_ptr<BottomLevel> Device::create_bottom_level(
@@ -191,6 +193,7 @@ TriangleScene Device::create_instance_scene(std::span<const TriangleInstance> in
     VkBuildAccelerationStructureFlagsKHR flags) const {
     if(!impl_) throw std::logic_error("photara_vk Device is empty");
     if(instances.empty() || instances.size()>UINT32_MAX) throw std::invalid_argument("Expected nonempty TLAS instances");
+    flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
     auto fns=load_accel(impl_->device);
     VkPhysicalDeviceAccelerationStructurePropertiesKHR props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
     VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2}; props2.pNext=&props;
@@ -220,7 +223,63 @@ TriangleScene Device::create_instance_scene(std::span<const TriangleInstance> in
     geometry.geometry.instances.data.deviceAddress=input.device_address();
     auto top=build_level(impl_,fns,VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,geometry,std::uint32_t(instances.size()),flags);
     auto result=TriangleScene(impl_,impl_->device,std::move(keep),std::move(input),std::move(top.storage),top.handle,fns.destroy);
+    result.build_flags_=flags;
     top.handle=VK_NULL_HANDLE; return result;
+}
+void Device::update_instance_scene(TriangleScene &scene, std::span<const TriangleInstance> instances) const {
+    if (!impl_ || scene.device_!=impl_->device || !scene.valid() ||
+        !(scene.build_flags_ & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR) ||
+        instances.size()!=scene.geometry_.size()) throw std::invalid_argument("Incompatible TLAS update");
+    std::vector<VkAccelerationStructureInstanceKHR> records;
+    for (std::size_t i=0;i<instances.size();++i) {
+        const auto &instance=instances[i];
+        if (instance.geometry!=scene.geometry_[i] || instance.custom_index>0xffffff || instance.mask==0)
+            throw std::invalid_argument("TLAS update must preserve active geometry");
+        const auto &m=instance.transform.matrix;
+        for(int r=0;r<3;++r) for(int c=0;c<4;++c)
+            if(!std::isfinite(m[r][c])) throw std::invalid_argument("Non-finite instance transform");
+        float det=m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])-
+                  m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0])+m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]);
+        if(std::abs(det)<1e-12f) throw std::invalid_argument("Singular instance transform");
+        VkAccelerationStructureInstanceKHR record{};
+        record.transform=instance.transform; record.instanceCustomIndex=instance.custom_index;
+        record.mask=instance.mask; record.flags=instance.flags;
+        record.accelerationStructureReference=instance.geometry->address();
+        records.push_back(record);
+    }
+    auto fns=load_accel(impl_->device);
+    VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+    geometry.geometryType=VK_GEOMETRY_TYPE_INSTANCES_KHR;
+    geometry.geometry.instances.sType=VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+    geometry.geometry.instances.data.deviceAddress=scene.instances_.device_address();
+    VkAccelerationStructureBuildGeometryInfoKHR info{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+    info.type=VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    info.flags=scene.build_flags_; info.mode=VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+    info.geometryCount=1; info.pGeometries=&geometry;
+    info.srcAccelerationStructure=scene.top_level_; info.dstAccelerationStructure=scene.top_level_;
+    std::uint32_t count=std::uint32_t(records.size());
+    VkAccelerationStructureBuildSizesInfoKHR sizes{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+    fns.sizes(impl_->device,VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,&info,&count,&sizes);
+    VkPhysicalDeviceAccelerationStructurePropertiesKHR props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+    VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2}; props2.pNext=&props;
+    vkGetPhysicalDeviceProperties2(impl_->physical,&props2);
+    VkDeviceSize alignment=std::max<VkDeviceSize>(1,props.minAccelerationStructureScratchOffsetAlignment);
+    if (scene.update_scratch_.size()<sizes.updateScratchSize+alignment-1)
+        scene.update_scratch_=make_buffer(*impl_,sizes.updateScratchSize+alignment-1,MemoryKind::device_local,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+    info.scratchData.deviceAddress=(scene.update_scratch_.device_address()+alignment-1)&~(alignment-1);
+    scene.instances_.upload(records.data(),records.size()*sizeof(records[0]));
+    VkAccelerationStructureBuildRangeInfoKHR range{};range.primitiveCount=count;
+    const VkAccelerationStructureBuildRangeInfoKHR *ranges[]={&range};
+    auto encoder=CommandEncoder(impl_,BarrierPolicy::none);
+    encoder.barrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT|VK_PIPELINE_STAGE_HOST_BIT,
+        VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT|VK_ACCESS_HOST_WRITE_BIT,
+        VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR|VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
+    fns.build(encoder.native(),1,&info,ranges);
+    encoder.barrier(VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+    encoder.submit_wait();
 }
 TriangleScene Device::create_triangle_scene(std::span<const float> positions,
     std::span<const std::uint32_t> indices,const TriangleSceneOptions& options) const {

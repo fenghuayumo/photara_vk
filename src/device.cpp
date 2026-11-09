@@ -305,6 +305,10 @@ void create_logical(Device::Impl& impl, const DeviceRequest& request) {
     features_query.pNext = &vk12_query;
     vk12_query.pNext = &sync2_query;
     vkGetPhysicalDeviceFeatures2(impl.physical, &features_query);
+    if (request.want.sampled_image_nonuniform && vk12_query.shaderSampledImageArrayNonUniformIndexing) {
+        vk12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+        enabled.sampled_image_nonuniform = true;
+    }
 
 #ifdef VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME
     if (request.want.push_descriptors &&
@@ -423,6 +427,21 @@ void create_logical(Device::Impl& impl, const DeviceRequest& request) {
         }
     }
 
+    VkPhysicalDeviceShaderClockFeaturesKHR shader_clock{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR};
+    if (request.want.shader_device_clock &&
+        has_device_extension(impl.physical, VK_KHR_SHADER_CLOCK_EXTENSION_NAME)) {
+        VkPhysicalDeviceShaderClockFeaturesKHR available{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR};
+        VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        query.pNext = &available;
+        vkGetPhysicalDeviceFeatures2(impl.physical, &query);
+        if (available.shaderDeviceClock) {
+            shader_clock.shaderDeviceClock = VK_TRUE;
+            extensions.push_back(VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
+            enabled.shader_device_clock = true;
+        }
+    }
     VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
     VkPhysicalDeviceRayQueryFeaturesKHR ray_query{
@@ -528,7 +547,7 @@ void create_logical(Device::Impl& impl, const DeviceRequest& request) {
 #ifdef VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
     if (sync2.synchronization2) push_feature(sync2);
 #endif
-    if (vk12.bufferDeviceAddress || vk12.timelineSemaphore) push_feature(vk12);
+    if (vk12.bufferDeviceAddress || vk12.timelineSemaphore || vk12.shaderSampledImageArrayNonUniformIndexing) push_feature(vk12);
     if (enable_shader_float64 || shader_features.features.shaderInt64 ||
         shader_features.features.shaderStorageImageWriteWithoutFormat ||
         shader_features.features.geometryShader ||
@@ -540,6 +559,7 @@ void create_logical(Device::Impl& impl, const DeviceRequest& request) {
     }
 #endif
     if (dot.shaderIntegerDotProduct) push_feature(dot);
+    if (shader_clock.shaderDeviceClock) push_feature(shader_clock);
     if (acceleration.accelerationStructure) push_feature(acceleration);
     if (ray_query.rayQuery) push_feature(ray_query);
     if (ray_pipeline.rayTracingPipeline) push_feature(ray_pipeline);

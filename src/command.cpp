@@ -15,6 +15,19 @@ constexpr std::uint32_t kDescriptorsPerSet = 16;
 
 }  // namespace
 
+struct ComputeDescriptors::Impl {
+    std::shared_ptr<Device::Impl> device;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    std::vector<VkDescriptorType> types;
+    std::vector<std::uint32_t> counts;
+
+    ~Impl() {
+        if (pool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(device->device, pool, nullptr);
+    }
+};
+
 CommandEncoder::CommandEncoder(std::shared_ptr<Device::Impl> impl,
                                const BarrierPolicy policy)
     : impl_(std::move(impl)), policy_(policy) {
@@ -35,9 +48,6 @@ CommandEncoder::CommandEncoder(std::shared_ptr<Device::Impl> impl,
     VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     check_vk(vkCreateFence(impl_->device, &fence_info, nullptr, &fence_),
              "vkCreateFence");
-    if (!impl_->caps.enabled.push_descriptors) {
-        add_descriptor_pool(kDescriptorSets);
-    }
 }
 
 CommandEncoder::~CommandEncoder() {
@@ -78,6 +88,11 @@ CommandEncoder &CommandEncoder::operator=(CommandEncoder &&other) noexcept {
     std::swap(image_infos_, other.image_infos_);
     std::swap(descriptor_writes_, other.descriptor_writes_);
     std::swap(acceleration_infos_, other.acceleration_infos_);
+    std::swap(retained_descriptors_, other.retained_descriptors_);
+    std::swap(bound_pipeline_, other.bound_pipeline_);
+    std::swap(bound_set_, other.bound_set_);
+    std::swap(bound_layout_, other.bound_layout_);
+    std::swap(statistics_, other.statistics_);
     std::swap(recording_, other.recording_);
     std::swap(in_flight_, other.in_flight_);
     return *this;
@@ -87,8 +102,10 @@ void CommandEncoder::retire() {
     if (!in_flight_) return;
     check_vk(vkWaitForFences(impl_->device, 1, &fence_, VK_TRUE, UINT64_MAX),
              "vkWaitForFences");
+    ++statistics_.fence_wait_count;
     check_vk(vkResetFences(impl_->device, 1, &fence_), "vkResetFences");
     in_flight_ = false;
+    retained_descriptors_.clear();
     reset_descriptor_pools();
 }
 
@@ -99,6 +116,9 @@ void CommandEncoder::begin() {
     VkCommandBufferBeginInfo begin_info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check_vk(vkBeginCommandBuffer(command_, &begin_info), "vkBeginCommandBuffer");
+    bound_pipeline_ = VK_NULL_HANDLE;
+    bound_set_ = VK_NULL_HANDLE;
+    bound_layout_ = VK_NULL_HANDLE;
     recording_ = true;
 }
 
@@ -137,7 +157,7 @@ void CommandEncoder::transition_image(const Image &image, VkImageLayout old_layo
     info.newLayout = new_layout;
     info.srcQueueFamilyIndex = info.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     info.image = image.handle();
-    info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, image.mip_levels(), 0, 1};
     vkCmdPipelineBarrier(command_, src_stage, dst_stage, 0, 0, nullptr, 0, nullptr, 1,
                          &info);
 }
@@ -161,17 +181,23 @@ void CommandEncoder::copy_to_image(const Image &destination, const Buffer &sourc
             throw std::invalid_argument(
                 "copy_to_image requires a supported tightly packed color format");
     }
-    if (source.size() <
-            uint64_t(destination.width()) * destination.height() * texel_bytes ||
-        source.offset() % 4)
+    std::vector<VkBufferImageCopy> regions;
+    VkDeviceSize offset = source.offset();
+    for (uint32_t level=0; level<destination.mip_levels(); ++level) {
+        const auto width=std::max(1u,destination.width()>>level);
+        const auto height=std::max(1u,destination.height()>>level);
+        VkBufferImageCopy region{};
+        region.bufferOffset=offset;
+        region.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,level,0,1};
+        region.imageExtent={width,height,1};
+        regions.push_back(region);
+        offset+=VkDeviceSize(width)*height*texel_bytes;
+    }
+    if (source.size() < offset-source.offset() || source.offset()%4)
         throw std::invalid_argument("Image upload buffer is too small or misaligned");
     begin();
-    VkBufferImageCopy region{};
-    region.bufferOffset = source.offset();
-    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    region.imageExtent = {destination.width(), destination.height(), 1};
     vkCmdCopyBufferToImage(command_, source.handle(), destination.handle(),
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, uint32_t(regions.size()), regions.data());
 }
 
 void CommandEncoder::after_dispatch() {
@@ -229,7 +255,7 @@ void CommandEncoder::push(const ComputePipeline &pipeline, const void *push_cons
 void CommandEncoder::add_descriptor_pool(const std::uint32_t sets) {
     const VkDescriptorPoolSize sizes[] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * kDescriptorsPerSet},
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets * kDescriptorsPerSet},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets * 512},
         {VK_DESCRIPTOR_TYPE_SAMPLER, sets * kDescriptorsPerSet},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, sets * kDescriptorsPerSet},
         {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, sets * kDescriptorsPerSet},
@@ -272,6 +298,7 @@ VkDescriptorSet CommandEncoder::allocate_set(const VkDescriptorSetLayout layout)
             vkAllocateDescriptorSets(impl_->device, &allocate, &set);
         if (result == VK_SUCCESS) {
             pending_sets_.push_back(set);
+            ++statistics_.descriptor_set_allocations;
             return set;
         }
         const bool exhausted =
@@ -284,8 +311,8 @@ VkDescriptorSet CommandEncoder::allocate_set(const VkDescriptorSetLayout layout)
     throw std::runtime_error("vkAllocateDescriptorSets failed");
 }
 
-void CommandEncoder::bind_storage(const ComputePipeline &pipeline,
-                                  std::span<const BufferBinding> bindings) {
+void CommandEncoder::prepare_writes(const ComputePipeline &pipeline,
+                                    std::span<const BufferBinding> bindings) {
     if (bindings.size() != pipeline.binding_count()) {
         throw std::invalid_argument("Descriptor binding count does not match pipeline");
     }
@@ -298,7 +325,7 @@ void CommandEncoder::bind_storage(const ComputePipeline &pipeline,
         const int selected = int(resource.buffer != VK_NULL_HANDLE) +
                              int(resource.acceleration_structure != VK_NULL_HANDLE) +
                              int(resource.image_view != VK_NULL_HANDLE) +
-                             int(resource.sampler != VK_NULL_HANDLE);
+                             int(resource.sampler != VK_NULL_HANDLE) + int(!resource.images.empty());
         if (selected != 1)
             throw std::invalid_argument(
                 "Descriptor must reference exactly one typed resource");
@@ -307,9 +334,17 @@ void CommandEncoder::bind_storage(const ComputePipeline &pipeline,
         descriptor_infos_[index].range = bindings[index].range;
         descriptor_writes_[index] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         descriptor_writes_[index].dstBinding = index;
-        descriptor_writes_[index].descriptorCount = 1;
+        descriptor_writes_[index].descriptorCount = pipeline.descriptor_count(index);
         descriptor_writes_[index].descriptorType = pipeline.descriptor_type(index);
         auto &write = descriptor_writes_[index];
+        if (!resource.images.empty()) {
+            if (write.descriptorType != VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+                resource.images.size() != write.descriptorCount)
+                throw std::invalid_argument("Sampled-image array size/type mismatch");
+            write.pImageInfo = resource.images.data();
+            continue;
+        }
+        if (write.descriptorCount != 1) throw std::invalid_argument("Expected descriptor array");
         if (write.descriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR) {
             if (bindings[index].acceleration_structure == VK_NULL_HANDLE ||
                 bindings[index].buffer != VK_NULL_HANDLE) {
@@ -352,12 +387,100 @@ void CommandEncoder::bind_storage(const ComputePipeline &pipeline,
             throw std::invalid_argument("Unsupported compute descriptor type");
         }
     }
+}
+
+void CommandEncoder::bind_pipeline(const ComputePipeline &pipeline) {
+    if (bound_pipeline_ == pipeline.handle())
+        return;
     vkCmdBindPipeline(command_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.handle());
+    bound_pipeline_ = pipeline.handle();
+    ++statistics_.pipeline_binds;
+}
+
+ComputeDescriptors CommandEncoder::prepare_descriptors(const ComputePipeline &pipeline,
+                                                       std::span<const BufferBinding> bindings) {
+    if (!impl_)
+        throw std::logic_error("CommandEncoder is empty");
+    if (!pipeline.valid())
+        throw std::invalid_argument("ComputePipeline is empty");
+    if (pipeline.push_descriptors())
+        throw std::invalid_argument("Reusable sets require a non-push descriptor pipeline");
+    prepare_writes(pipeline, bindings);
+    ComputeDescriptors result;
+    result.impl_ = std::make_shared<ComputeDescriptors::Impl>();
+    auto &prepared = *result.impl_;
+    prepared.device = impl_;
+    std::vector<VkDescriptorPoolSize> sizes;
+    for (std::uint32_t index = 0; index < pipeline.binding_count(); ++index) {
+        const auto type = pipeline.descriptor_type(index);
+        const auto count = pipeline.descriptor_count(index);
+        prepared.types.push_back(type);
+        prepared.counts.push_back(count);
+        const auto found = std::find_if(sizes.begin(), sizes.end(),
+                                        [type](const auto &size) { return size.type == type; });
+        if (found == sizes.end())
+            sizes.push_back({type, count});
+        else
+            found->descriptorCount += count;
+    }
+    VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool_info.maxSets = 1;
+    pool_info.poolSizeCount = static_cast<std::uint32_t>(sizes.size());
+    pool_info.pPoolSizes = sizes.data();
+    check_vk(vkCreateDescriptorPool(impl_->device, &pool_info, nullptr, &prepared.pool),
+             "vkCreateDescriptorPool (reusable)");
+    VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocate.descriptorPool = prepared.pool;
+    allocate.descriptorSetCount = 1;
+    const auto layout = pipeline.set_layout();
+    allocate.pSetLayouts = &layout;
+    check_vk(vkAllocateDescriptorSets(impl_->device, &allocate, &prepared.set),
+             "vkAllocateDescriptorSets (reusable)");
+    ++statistics_.descriptor_set_allocations;
+    for (auto &write : descriptor_writes_)
+        write.dstSet = prepared.set;
+    vkUpdateDescriptorSets(impl_->device, static_cast<std::uint32_t>(descriptor_writes_.size()),
+                           descriptor_writes_.data(), 0, nullptr);
+    ++statistics_.descriptor_set_updates;
+    return result;
+}
+
+void CommandEncoder::bind_storage(const ComputePipeline &pipeline,
+                                  const ComputeDescriptors &descriptors) {
+    if (!descriptors.impl_ || descriptors.impl_->device != impl_ || pipeline.push_descriptors())
+        throw std::invalid_argument("Invalid reusable compute descriptors");
+    const auto &prepared = *descriptors.impl_;
+    if (prepared.types.size() != pipeline.binding_count())
+        throw std::invalid_argument("Reusable descriptor layout mismatch");
+    for (std::uint32_t index = 0; index < pipeline.binding_count(); ++index)
+        if (prepared.types[index] != pipeline.descriptor_type(index) ||
+            prepared.counts[index] != pipeline.descriptor_count(index))
+            throw std::invalid_argument("Reusable descriptor layout mismatch");
+    bind_pipeline(pipeline);
+    if (bound_set_ == prepared.set && bound_layout_ == pipeline.layout())
+        return;
+    if (std::find(retained_descriptors_.begin(), retained_descriptors_.end(), descriptors.impl_) ==
+        retained_descriptors_.end())
+        retained_descriptors_.push_back(descriptors.impl_);
+    vkCmdBindDescriptorSets(command_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.layout(), 0, 1,
+                            &prepared.set, 0, nullptr);
+    bound_set_ = prepared.set;
+    bound_layout_ = pipeline.layout();
+    ++statistics_.descriptor_set_binds;
+}
+
+void CommandEncoder::bind_storage(const ComputePipeline &pipeline,
+                                  std::span<const BufferBinding> bindings) {
+    prepare_writes(pipeline, bindings);
+    bind_pipeline(pipeline);
     if (pipeline.push_descriptors() && impl_->cmd_push_descriptor != nullptr) {
         impl_->cmd_push_descriptor(
             command_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.layout(), 0,
             static_cast<std::uint32_t>(descriptor_writes_.size()),
             descriptor_writes_.data());
+        bound_set_ = VK_NULL_HANDLE;
+        bound_layout_ = VK_NULL_HANDLE;
+        ++statistics_.push_descriptor_updates;
         return;
     }
     const VkDescriptorSet set = allocate_set(pipeline.set_layout());
@@ -365,8 +488,50 @@ void CommandEncoder::bind_storage(const ComputePipeline &pipeline,
     vkUpdateDescriptorSets(impl_->device,
                            static_cast<std::uint32_t>(descriptor_writes_.size()),
                            descriptor_writes_.data(), 0, nullptr);
+    ++statistics_.descriptor_set_updates;
     vkCmdBindDescriptorSets(command_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.layout(),
                             0, 1, &set, 0, nullptr);
+    bound_set_ = set;
+    bound_layout_ = pipeline.layout();
+    ++statistics_.descriptor_set_binds;
+}
+
+void CommandEncoder::dispatch(const ComputePipeline &pipeline,
+                              const ComputeDescriptors &descriptors, const void *push_constants,
+                              const std::uint32_t push_bytes, const std::uint32_t groups_x,
+                              const std::uint32_t groups_y, const std::uint32_t groups_z) {
+    if (groups_x == 0 || groups_y == 0 || groups_z == 0)
+        return;
+    begin();
+    bind_storage(pipeline, descriptors);
+    push(pipeline, push_constants, push_bytes);
+    vkCmdDispatch(command_, groups_x, groups_y, groups_z);
+    ++statistics_.direct_dispatch_count;
+    after_dispatch();
+}
+
+void CommandEncoder::dispatch_indirect(const ComputePipeline &pipeline,
+                                       const ComputeDescriptors &descriptors,
+                                       const void *push_constants, const std::uint32_t push_bytes,
+                                       const BufferBinding indirect) {
+    if (indirect.buffer == VK_NULL_HANDLE)
+        throw std::invalid_argument("Indirect dispatch buffer is null");
+    begin();
+    bind_storage(pipeline, descriptors);
+    push(pipeline, push_constants, push_bytes);
+    barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
+    vkCmdDispatchIndirect(command_, indirect.buffer, indirect.offset);
+    ++statistics_.indirect_dispatch_count;
+    after_dispatch();
+}
+
+void CommandEncoder::dispatch_indirect(const ComputePipeline &pipeline,
+                                       const ComputeDescriptors &descriptors,
+                                       const void *push_constants, const std::uint32_t push_bytes,
+                                       const Buffer &indirect, const VkDeviceSize offset) {
+    dispatch_indirect(pipeline, descriptors, push_constants, push_bytes,
+                      binding(indirect, offset, sizeof(VkDispatchIndirectCommand)));
 }
 
 void CommandEncoder::dispatch(const ComputePipeline &pipeline,
@@ -381,6 +546,7 @@ void CommandEncoder::dispatch(const ComputePipeline &pipeline,
     bind_storage(pipeline, bindings);
     push(pipeline, push_constants, push_bytes);
     vkCmdDispatch(command_, groups_x, groups_y, groups_z);
+    ++statistics_.direct_dispatch_count;
     after_dispatch();
 }
 
@@ -398,6 +564,7 @@ void CommandEncoder::dispatch_indirect(const ComputePipeline &pipeline,
     barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
             VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
     vkCmdDispatchIndirect(command_, indirect.buffer, indirect.offset);
+    ++statistics_.indirect_dispatch_count;
     after_dispatch();
 }
 
@@ -453,6 +620,7 @@ void CommandEncoder::submit() {
     {
         std::lock_guard lock(queue_mutex(impl_->queue));
         check_vk(vkQueueSubmit(impl_->queue, 1, &submit_info, fence_), "vkQueueSubmit");
+        ++statistics_.submission_count;
     }
     recording_ = false;
     in_flight_ = true;
@@ -467,6 +635,10 @@ void CommandEncoder::wait() { retire(); }
 
 VkCommandBuffer CommandEncoder::native() {
     begin();
+    // External commands may change either binding. Do not trust cached state.
+    bound_pipeline_ = VK_NULL_HANDLE;
+    bound_set_ = VK_NULL_HANDLE;
+    bound_layout_ = VK_NULL_HANDLE;
     return command_;
 }
 
