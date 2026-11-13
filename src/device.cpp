@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <cstring>
 #include <memory>
 #include <stdexcept>
@@ -258,6 +260,24 @@ void pick_physical(Device::Impl& impl, const DeviceRequest& request) {
         impl.physical = devices[request.device_index];
     }
 
+    // Studio and its child processes pin all independently-created compute
+    // devices by UUID, including feature extraction and export backends.
+    if (const char* wanted = std::getenv("PHOTARA_VULKAN_DEVICE_UUID"); wanted && *wanted) {
+        if (std::strlen(wanted) != 32) throw std::invalid_argument("Invalid Vulkan device UUID");
+        VkPhysicalDevice selected = VK_NULL_HANDLE;
+        constexpr char hex[] = "0123456789abcdef";
+        for (auto candidate : devices) {
+            VkPhysicalDeviceIDProperties id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+            VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+            properties.pNext = &id;
+            vkGetPhysicalDeviceProperties2(candidate, &properties);
+            std::string uuid;
+            for (auto byte : id.deviceUUID) { uuid += hex[byte >> 4]; uuid += hex[byte & 15]; }
+            if (uuid == wanted) selected = candidate;
+        }
+        if (!selected) throw std::runtime_error("Requested Vulkan GPU is unavailable");
+        impl.physical = selected;
+    }
     impl.caps = make_caps(impl.physical);
     impl.queue_family = find_queue_family(
         impl.physical, request.want.graphics, request.want.present,
